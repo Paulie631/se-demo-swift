@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+- **Deploy the AWS stack from the console:** Deploy stack / Delete stack with an AWS CLI profile or access keys, live progress, outputs filled in (the MCP check picks up the URL). A failed create cleans itself up and shows the reason.
+- `./quick-kit aws deploy|status|delete` on the command line.
+- The template no longer contains test card numbers, example keys or SSNs verbatim (they're assembled at runtime), so sending it through an inspecting proxy doesn't trip DLP.
+
 ## 0.3.0
 - **Update button** in the console header: checks GitHub for a newer version, shows what's new, updates and restarts the console. A git clone updates with `git pull`; other copies are backed up first and can be rolled back.
 - `./quick-kit update` (`--check`, `--rollback`) on the command line.

@@ -415,5 +415,118 @@ class UpdaterTests(unittest.TestCase):
             updater.rollback(repo, repo / "bk")
 
 
+class FakeCF:
+    """Just enough CloudFormation: create/update/describe/events/delete, completing on the next describe."""
+    def __init__(self, fail=False):
+        import datetime
+        self.dt = datetime
+        self.stacks, self.events, self.fail, self.calls = {}, [], fail, []
+
+    def _ev(self, name, lid, status, reason=""):
+        self.events.append({"EventId": str(len(self.events)), "LogicalResourceId": lid, "ResourceStatus": status,
+                            "ResourceStatusReason": reason, "Timestamp": self.dt.datetime.now(self.dt.timezone.utc)})
+
+    def create_stack(self, **kw):
+        self.calls.append(("create", kw))
+        self.stacks[kw["StackName"]] = {"StackName": kw["StackName"], "StackStatus": "CREATE_IN_PROGRESS", "StackId": "id"}
+        self._ev(kw["StackName"], "McpFunction", "CREATE_IN_PROGRESS")
+        return {"StackId": "arn:aws:cloudformation:us-east-1:123456789012:stack/x/1"}
+
+    def update_stack(self, **kw):
+        self.calls.append(("update", kw))
+        raise Exception("An error occurred (ValidationError): No updates are to be performed.")
+
+    def delete_stack(self, StackName):
+        self.calls.append(("delete", StackName))
+        self.stacks[StackName]["StackStatus"] = "DELETE_IN_PROGRESS"
+
+    def describe_stacks(self, StackName):
+        s = self.stacks.get(StackName)
+        if not s:
+            raise Exception(f"Stack with id {StackName} does not exist")
+        if s["StackStatus"] == "CREATE_IN_PROGRESS":
+            if self.fail:   # OnFailure=DELETE: the stack goes away, its events stay readable by stack ID
+                self._ev(StackName, "McpFunction", "CREATE_FAILED", "Resource handler returned message: boom")
+                del self.stacks[StackName]
+                raise Exception(f"Stack with id {StackName} does not exist")
+            else:
+                self._ev(StackName, "McpFunction", "CREATE_COMPLETE")
+                s.update(StackStatus="CREATE_COMPLETE", Outputs=[{"OutputKey": "McpServerUrl", "OutputValue": "https://x.lambda-url.us-east-1.on.aws/"}])
+        elif s["StackStatus"] == "DELETE_IN_PROGRESS":
+            del self.stacks[StackName]
+            raise Exception(f"Stack with id {StackName} does not exist")
+        return {"Stacks": [dict(s)]}
+
+    def describe_stack_events(self, StackName):
+        if not StackName.startswith("arn:") and StackName not in self.stacks:
+            raise Exception(f"Stack [{StackName}] does not exist")
+        return {"StackEvents": list(reversed(self.events))}
+
+
+class FakeSess:
+    region_name = "us-east-1"
+
+    def __init__(self, cf):
+        self.cf = cf
+
+    def client(self, name):
+        if name == "sts":
+            return types.SimpleNamespace(get_caller_identity=lambda: {"Account": "123456789012", "Arn": "arn:aws:iam::123456789012:user/paul"})
+        return self.cf
+
+
+class AwsDeployTests(unittest.TestCase):
+    def setUp(self):
+        import aws_deploy
+        self.ad = aws_deploy
+        self._sleep = aws_deploy.time.sleep
+        aws_deploy.time.sleep = lambda s: None
+        self.cf = FakeCF()
+        self._sess = qk.aws_sess
+        qk.aws_sess = lambda cfg: FakeSess(self.cf)
+        self._save = qk.save_cfg
+        qk.save_cfg = lambda c: None
+
+    def tearDown(self):
+        self.ad.time.sleep = self._sleep
+        qk.aws_sess = self._sess
+        qk.save_cfg = self._save
+
+    def test_deploy_update_noop_delete(self):
+        lines = []
+        cfg = {"aws": {"project": "acme-quick", "region": "us-east-1"}}
+        st = qk.aws_deploy_stack(cfg, "tok123", "", lines.append)
+        self.assertEqual(st["status"], "CREATE_COMPLETE")
+        self.assertEqual(st["outputs"]["McpServerUrl"], "https://x.lambda-url.us-east-1.on.aws/")
+        kind, kw = self.cf.calls[0]
+        self.assertEqual(kind, "create")
+        self.assertEqual(kw["Capabilities"], ["CAPABILITY_IAM"])
+        self.assertEqual(kw["OnFailure"], "DELETE")
+        self.assertIn({"ParameterKey": "McpToken", "ParameterValue": "tok123"}, kw["Parameters"])
+        self.assertNotIn("ZpaProvisioningKey", [p["ParameterKey"] for p in kw["Parameters"]])
+        self.assertIn("Default: 'acme-quick'", kw["TemplateBody"])
+        self.assertLess(len(kw["TemplateBody"]), 51200)        # CloudFormation's inline TemplateBody limit
+        self.assertTrue(any("CREATE_COMPLETE" in l for l in lines))
+        self.assertEqual(qk.aws_deploy_stack(cfg, "", "", lines.append)["status"], "CREATE_COMPLETE")  # no changes
+        self.assertEqual(qk.aws_delete_stack(cfg, lines.append)["status"], "DELETE_COMPLETE")
+        self.assertEqual(self.cf.stacks, {})
+
+    def test_failed_create_reports_reason(self):
+        self.cf.fail = True
+        with self.assertRaises(self.ad.AwsError) as e:
+            qk.aws_deploy_stack({"aws": {"project": "acme-quick", "region": "us-east-1"}}, "", "")
+        self.assertIn("boom", str(e.exception))
+
+    def test_zpa_needs_key_and_ami(self):
+        with self.assertRaises(ValueError):
+            qk.aws_deploy_stack({"aws": {"project": "acme-quick", "zpa": True, "ami": "ami-0123456789abcdef0"}}, "", "")
+
+    def test_template_has_no_dlp_bait_literals(self):
+        body = qk.build_template({"project": "zs-quick-demo"})
+        for s in ("4111111111111111", "4111 1111 1111 1111", "AKIAIOSFODNN7EXAMPLE", "512-44-7381",
+                  "BEGIN RSA PRIVATE KEY"):
+            self.assertNotIn(s, body)
+
+
 if __name__ == "__main__":
     unittest.main()

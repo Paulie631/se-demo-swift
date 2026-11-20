@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10,<3.15"
-# dependencies = ["requests>=2.31", "keyring>=24", "truststore>=0.9"]
+# dependencies = ["requests>=2.31", "keyring>=24", "truststore>=0.9", "boto3>=1.34"]
 # ///
 """Amazon Quick x Zscaler SE demo kit.
 
@@ -12,6 +12,7 @@
   ./quick-kit zpa              ZPA app segment + access rule for the PrivateLink path (--apply, --teardown)
   ./quick-kit traffic          send Quick-shaped demo traffic through Client Connector (--loops N, --only dlp|...)
                                --via cloudshare: send it from your CloudShare VM instead of this laptop
+  ./quick-kit aws deploy|status|delete   deploy the AWS demo stack with boto3 (--profile, --region)
   ./quick-kit template         write the AWS CloudFormation template (--out FILE, --project, --zpa, --ami ...)
   ./quick-kit mcp-test URL     check the demo MCP server from this laptop (--token T)
   ./quick-kit update           update from GitHub (--check, --rollback); the console has an Update button too
@@ -48,10 +49,11 @@ sys.path.insert(0, str(HERE))
 import cs_runner  # noqa: E402
 import quick_traffic  # noqa: E402
 import zia_quick_setup as zqs  # noqa: E402
+import aws_deploy  # noqa: E402
 import updater  # noqa: E402
 import zpa_quick  # noqa: E402
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 HOME = pathlib.Path(os.environ.get("QUICK_KIT_HOME", pathlib.Path.home() / ".quick-se-kit"))
 CFG_FILE = HOME / "config.json"
 LOG_FILE = HOME / "kit.log"
@@ -313,13 +315,21 @@ def start_job(fn) -> str:
     jid = secrets.token_hex(6)
     JOBS[jid] = {"state": "running", "elapsed": 0}
 
-    def progress(sec):
-        JOBS[jid]["elapsed"] = sec
+    t0 = time.time()
+
+    def progress(x):
+        """int: seconds elapsed (CloudShare); str: a progress line (CloudFormation events)."""
+        if isinstance(x, str):
+            JOBS[jid].setdefault("log", []).append(x)
+            JOBS[jid]["log"] = JOBS[jid]["log"][-200:]
+            JOBS[jid]["elapsed"] = int(time.time() - t0)
+        else:
+            JOBS[jid]["elapsed"] = x
 
     def work():
         try:
             JOBS[jid].update(state="done", result=fn(progress))
-        except (cs_runner.CloudShareError, zqs.ZiaError, ValueError) as e:
+        except (cs_runner.CloudShareError, zqs.ZiaError, aws_deploy.AwsError, ValueError) as e:
             log(str(e), "error")
             JOBS[jid].update(state="error", error=str(e))
         except Exception as e:
@@ -327,6 +337,71 @@ def start_job(fn) -> str:
             JOBS[jid].update(state="error", error=f"{e.__class__.__name__}: {e}")
     threading.Thread(target=work, daemon=True).start()
     return jid
+
+
+
+# ----------------------------------------------------------------------------- AWS deploy (CloudFormation via boto3)
+def aws_cfg(cfg: dict) -> dict:
+    a = dict(cfg.get("aws") or {})
+    a.setdefault("project", "zs-quick-demo")
+    a.setdefault("region", "us-east-1")
+    return a
+
+
+def aws_sess(cfg: dict):
+    a = aws_cfg(cfg)
+    if cfg.get("ca_bundle"):   # boto3 ignores the OS certificate store; this is how it trusts SSL inspection
+        os.environ["AWS_CA_BUNDLE"] = cfg["ca_bundle"]
+    if a.get("region") not in QUICK_REGIONS:
+        raise ValueError(f"Pick a Quick region: {', '.join(QUICK_REGIONS)}.")
+    if a.get("auth") == "keys":
+        if not a.get("key_id") or not get_secret("aws_secret_access_key"):
+            raise aws_deploy.AwsError("Enter the access key ID and secret (AWS environment tab).")
+        return aws_deploy.session(a["region"], key_id=a["key_id"], secret=get_secret("aws_secret_access_key"))
+    return aws_deploy.session(a["region"], profile=a.get("profile", ""))
+
+
+def aws_status(cfg: dict) -> dict:
+    a = aws_cfg(cfg)
+    s = aws_sess(cfg)
+    who = aws_deploy.whoami(s)
+    st = aws_deploy.stack(s, a["project"])
+    return {"identity": who, "stack": st}
+
+
+def aws_deploy_stack(cfg: dict, mcp_token: str = "", zpa_key: str = "", progress=None) -> dict:
+    a = aws_cfg(cfg)
+    s = aws_sess(cfg)
+    who = aws_deploy.whoami(s)
+    if a.get("zpa") and not zpa_key:
+        raise ValueError("The ZPA path needs the App Connector provisioning key.")
+    if a.get("zpa") and not a.get("ami"):
+        raise ValueError("The ZPA path needs the App Connector AMI ID for this region.")
+    body = build_template(a)
+    log(f"AWS: deploying stack {a['project']} to {who['account']} / {a['region']}"
+        + (" with the ZPA path" if a.get("zpa") else ""), "action")
+    if progress:
+        progress(f"AWS account {who['account']} ({who['arn'].split('/')[-1]}), region {a['region']}")
+    st = aws_deploy.deploy(s, a["project"], body, {"ProjectName": a["project"], "McpToken": mcp_token,
+                                                   "ZpaProvisioningKey": zpa_key if a.get("zpa") else ""},
+                           progress)
+    c = load_cfg()
+    c.setdefault("aws", {})["outputs"] = st.get("outputs") or {}
+    save_cfg(c)
+    log(f"AWS: stack {a['project']} {st['status']}", "ok")
+    return st
+
+
+def aws_delete_stack(cfg: dict, progress=None) -> dict:
+    a = aws_cfg(cfg)
+    s = aws_sess(cfg)
+    log(f"AWS: deleting stack {a['project']} in {a['region']}", "action")
+    r = aws_deploy.delete(s, a["project"], progress)
+    c = load_cfg()
+    c.setdefault("aws", {}).pop("outputs", None)
+    save_cfg(c)
+    log(f"AWS: stack {a['project']} deleted", "ok")
+    return r
 
 
 # ----------------------------------------------------------------------------- AWS template
@@ -495,7 +570,8 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
         def _do(self, fn):
             try:
                 return self._send(200, fn())
-            except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, updater.UpdateError, ValueError) as e:
+            except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, updater.UpdateError,
+                    aws_deploy.AwsError, ValueError) as e:
                 log(str(e), "error")
                 return self._send(400, {"error": str(e)})
             except Exception as e:  # unexpected: show it, keep the console alive
@@ -539,6 +615,11 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                 return self._do(lambda: {"groups": zpa_client(load_cfg()).connector_groups()})
             if path == "/api/zpa/status":
                 return self._do(lambda: {"items": zpa_quick.status(zpa_client(load_cfg()))})
+            if path == "/api/aws/profiles":
+                return self._send(200, {"profiles": aws_deploy.profiles(),
+                                        "has_secret": bool(get_secret("aws_secret_access_key"))})
+            if path == "/api/aws/status":
+                return self._do(lambda: aws_status(load_cfg()))
             if path == "/api/update/check":
                 return self._do(lambda: update_check(load_cfg()))
             if path == "/api/jobs":
@@ -562,7 +643,15 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                     if b.get("engines"):
                         c["engines"] = [e.strip() for e in b["engines"] if e.strip()]
                     if b.get("aws") is not None:
-                        c["aws"] = {k: v for k, v in b["aws"].items() if k not in ("token", "zpa_key")}
+                        keep = dict(c.get("aws") or {})
+                        keep.update({k: v for k, v in b["aws"].items()
+                                     if k not in ("token", "zpa_key", "secret", "mcp_token", "outputs")})
+                        c["aws"] = keep
+                    if b.get("aws_secret"):
+                        try:
+                            set_secret(b["aws_secret"], "aws_secret_access_key")
+                        except Exception as e:
+                            raise ValueError(f"Couldn't save the AWS secret to the OS keychain: {e}")
                     if b.get("cloudshare") is not None:
                         cs = dict(c.get("cloudshare") or {})
                         cs.update({k: (v or "").strip() for k, v in b["cloudshare"].items()
@@ -615,6 +704,14 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                 jid = start_job(lambda prog: cs_action(c, b.get("action", "traffic"), b.get("scenarios"),
                                                        int(b.get("loops") or 1), b.get("region") or "",
                                                        int(b.get("every") or 60), prog))
+                return self._send(200, {"job": jid})
+            if path in ("/api/aws/deploy", "/api/aws/delete"):
+                c = load_cfg()
+                if path == "/api/aws/deploy":
+                    tok, zk = b.get("mcp_token", ""), b.get("zpa_key", "")
+                    jid = start_job(lambda prog: aws_deploy_stack(c, tok, zk, prog))
+                else:
+                    jid = start_job(lambda prog: aws_delete_stack(c, prog))
                 return self._send(200, {"job": jid})
             if path == "/api/aws/template":
                 try:
@@ -672,7 +769,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
 
 
 # ----------------------------------------------------------------------------- install / uninstall
-APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "zpa_quick.py", "updater.py", "CHANGELOG.md", "quick_traffic.py", "cs_runner.py", "cloudshare/run.ps1", "gui.html", "quick-kit", "quick-kit.cmd",
+APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "zpa_quick.py", "updater.py", "aws_deploy.py", "CHANGELOG.md", "quick_traffic.py", "cs_runner.py", "cloudshare/run.ps1", "gui.html", "quick-kit", "quick-kit.cmd",
              "README.md", "aws/quick-demo-env.yaml", "aws/README.md"]
 WINDOWS = os.name == "nt"
 SHORTCUT = "Amazon Quick Demo Console"
@@ -765,6 +862,10 @@ def main(argv=None) -> None:
     tp.add_argument("--project", default="zs-quick-demo")
     tp.add_argument("--zpa", action="store_true")
     tp.add_argument("--ami", default="")
+    aw = sub.add_parser("aws", help="deploy / inspect / delete the demo CloudFormation stack (settings from the console)")
+    aw.add_argument("action", choices=["deploy", "status", "delete"])
+    aw.add_argument("--profile", help="AWS CLI profile (default: the one saved in the console, else default)")
+    aw.add_argument("--region", choices=QUICK_REGIONS)
     up = sub.add_parser("update", help="update the kit from GitHub (--check: only check, --rollback: previous version)")
     up.add_argument("--check", action="store_true")
     up.add_argument("--rollback", action="store_true")
@@ -813,6 +914,27 @@ def main(argv=None) -> None:
         elif a.cmd == "template":
             pathlib.Path(a.out).write_text(build_template({"project": a.project, "zpa": a.zpa, "ami": a.ami}), encoding="utf-8")
             print(f"Wrote {a.out}. Upload it in the CloudFormation console (Create stack > Upload a template file).")
+        elif a.cmd == "aws":
+            if a.profile or a.region:
+                cfg.setdefault("aws", {}).update({k: v for k, v in (("profile", a.profile), ("region", a.region),
+                                                                     ("auth", "profile" if a.profile else None)) if v})
+            if a.action == "status":
+                r = aws_status(cfg)
+                print(f"Account {r['identity']['account']} · {r['identity']['region']}")
+                st = r["stack"]
+                print(f"Stack: {st['status'] if st else 'not deployed'}")
+                for k, v in ((st or {}).get("outputs") or {}).items():
+                    print(f"  {k}: {v}")
+            elif a.action == "deploy":
+                tok = getpass.getpass("MCP token (Enter for none): ")
+                zk = getpass.getpass("ZPA provisioning key: ") if aws_cfg(cfg).get("zpa") else ""
+                st = aws_deploy_stack(cfg, tok, zk, progress=lambda m: print("  " + m))
+                for k, v in (st.get("outputs") or {}).items():
+                    print(f"  {k}: {v}")
+            else:
+                if input(f"Delete stack {aws_cfg(cfg)['project']}? Type yes: ").strip().lower() == "yes":
+                    aws_delete_stack(cfg, progress=lambda m: print("  " + m))
+                    print("Deleted.")
         elif a.cmd == "update":
             if a.rollback:
                 print("Rolled back to", updater.rollback(HERE, BACKUP))
@@ -833,7 +955,8 @@ def main(argv=None) -> None:
             for st in r["steps"]:
                 print(f"  [{'✓' if st['ok'] else '✗'}] {st['step']:<32} {st.get('status')} {st.get('note', '')}")
             print("Tools:", ", ".join(r["tools"]) or "none")
-    except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, updater.UpdateError, ValueError) as e:
+    except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, updater.UpdateError, aws_deploy.AwsError,
+            ValueError) as e:
         if getattr(a, "json", False):
             print(cs_runner.MARK + json.dumps({"ok": False, "error": str(e)}))
         sys.exit(str(e))

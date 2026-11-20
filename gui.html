@@ -237,8 +237,18 @@ body.present .notes,body.present .presenter{display:none}
 <section class="view" id="v-aws"><div class="wrap">
   <div class="grid">
     <div class="panel">
-      <h2>1 · Build the CloudFormation template</h2>
-      <p>One stack: a private S3 bucket of synthetic sensitive data (for Quick knowledge bases and DSPM), a <b>deliberately vulnerable</b> MCP server (for AI Guard, AI-SPM and red teaming) and, optionally, a ZPA App Connector with a Quick PrivateLink path.</p>
+      <h2>1 · Deploy the stack</h2>
+      <p>One stack: a private S3 bucket of synthetic sensitive data (for Quick knowledge bases and DSPM), a <b>deliberately vulnerable</b> MCP server (for AI Guard, AI-SPM and red teaming) and, optionally, a ZPA App Connector with a Quick PrivateLink path. Use a demo AWS account.</p>
+      <div class="field"><span class="lbl">AWS credentials</span>
+        <div class="seg" id="awsauth"><button data-a="profile" class="on">AWS CLI profile</button><button data-a="keys">Access keys</button></div>
+      </div>
+      <div id="awsprof" class="field"><span class="lbl">Profile from ~/.aws (SSO profiles: run <code>aws sso login --profile …</code> first)</span>
+        <div class="row"><select id="awsprofile" style="flex:1"><option value="">default</option></select><button id="awsprofref">↻</button></div></div>
+      <div id="awskeys" style="display:none">
+        <div class="field"><span class="lbl">Access key ID</span><input type="text" id="awskid" autocomplete="off"></div>
+        <div class="field"><span class="lbl">Secret access key <span id="awssecstate" class="pill">not saved</span></span><input type="password" id="awssec" placeholder="Leave blank to keep the saved secret" autocomplete="new-password"></div>
+      </div>
+      <div class="row" style="margin-bottom:12px"><button id="awscheck">Check AWS access</button><span id="awswho" class="hint"></span></div>
       <div class="field"><span class="lbl">Project name (prefix for resources)</span><input type="text" id="proj" value="zs-quick-demo"></div>
       <div class="field"><span class="lbl">Region (must be a Quick region)</span><select id="awsregion"></select></div>
       <label class="check"><input type="checkbox" id="zpa"> Add the ZPA path (VPC, Quick PrivateLink, App Connector · about $3–5/day)</label>
@@ -246,15 +256,20 @@ body.present .notes,body.present .presenter{display:none}
         <div class="field"><span class="lbl">Zscaler App Connector AMI ID for this region (subscribe in AWS Marketplace first)</span><input type="text" id="ami" placeholder="ami-…"></div>
         <div class="field"><span class="lbl">Instance type</span><select id="itype"><option>m5a.large</option><option>t3.medium</option><option>m5.large</option><option>m6i.large</option></select></div>
         <div class="field"><span class="lbl">EC2 key pair (optional)</span><input type="text" id="keypair"></div>
+        <div class="field"><span class="lbl">ZPA App Connector provisioning key (sent to AWS as a hidden parameter, never saved)</span><input type="password" id="zpakey" autocomplete="off"></div>
       </div>
-      <div class="row" style="margin-top:6px"><button class="primary" id="dl">Download template</button><a id="cfnlink" target="_blank" rel="noopener">Open CloudFormation console ↗</a></div>
-      <p class="hint" style="margin-top:10px">Secrets stay out of the file. You type the MCP token and ZPA provisioning key into the console's parameter page (they're hidden fields).</p>
+      <div class="field" style="margin-top:6px"><span class="lbl">MCP server token (optional: blank = no auth; sent as a hidden parameter, never saved)</span><input type="password" id="mcpnew" autocomplete="off"></div>
+      <div class="row" style="margin-top:6px"><button class="primary" id="deploy">Deploy stack</button><button class="danger" id="awsdel">Delete stack</button></div>
+      <div class="row" style="margin-top:8px"><button id="dl">Download template</button><a id="cfnlink" target="_blank" rel="noopener">Open CloudFormation console ↗</a></div>
+      <p class="hint" style="margin-top:10px">Deploying takes about 2 minutes (5–8 with the ZPA path). Prefer to do it yourself? Download the template and upload it in the CloudFormation console.</p>
+      <pre class="out" id="awslog" style="display:none"></pre>
+      <div id="awsouts"></div>
       <div class="err" id="awserr"></div>
     </div>
     <div class="panel">
       <h2>2 · Deploy &amp; wire to Quick</h2>
       <ol class="steps">
-        <li>CloudFormation › <b>Create stack</b> › <b>Upload a template file</b> › the downloaded file. Tick the IAM acknowledgement.</li>
+        <li>Press <b>Deploy stack</b> (or upload the downloaded template in CloudFormation yourself). The outputs appear under the button.</li>
         <li>Quick console: give Quick access to the stack's <code>DataBucketName</code>, then create an <b>S3 knowledge base</b> on it and add it to a chat agent or Space.</li>
         <li>Quick console › Integrations › <b>MCP</b>: URL = <code>McpServerUrl</code>, service auth <b>None</b> (or a custom <code>Authorization: Bearer …</code> header if you set a token). MCP integrations need Quick Enterprise.</li>
         <li>ZPA path: create an app segment for <code>&lt;region&gt;.quicksight.aws.amazon.com</code> (TCP 443) on the new connector group.</li>
@@ -321,6 +336,8 @@ async function loadCfg(){
   $("#cskeystate").textContent=CFG.cs_has_key?"saved in keychain":"not saved";$("#cskeystate").className="pill "+(CFG.cs_has_key?"ok":"");
   setSrc(CFG.traffic_source||"laptop");
   showScope();$("#sslrule").checked=CFG.ssl!==false;
+  setAuth(a.auth||"profile");$("#awskid").value=a.key_id||"";showOuts(a.outputs);
+  if(!loadCfg.profLoaded){loadCfg.profLoaded=true;loadProfiles().catch(()=>{})}
   const zp=CFG.zpa||{};$("#zpacid").value=zp.customer_id||"";$("#zpadom").textContent=`${(CFG.aws||{}).region||"us-east-1"}.quicksight.aws.amazon.com`;
   if(zp.customer_id&&CFG.has_secret&&!loadCfg.zpaLoaded){loadCfg.zpaLoaded=true;zpaGroups(true).catch(()=>{})}
   if(cs.api_id&&CFG.cs_has_key&&!loadCfg.csLoaded){loadCfg.csLoaded=true;csLoadEnvs(true).catch(err=>$("#cserr").textContent=err.message)}
@@ -442,6 +459,41 @@ const csDo=(action,label)=>e=>busy(e.target,async()=>{$("#cserr").textContent=""
   try{csShow(await csJob({action,every:+$("#csevery").value,scenarios:["visibility","dlp","upload"]},s=>{const t=$("#cstick");if(t)t.textContent=`${label}… ${s}s`}))}
   catch(err){$("#csout").innerHTML="";$("#cserr").textContent=err.message}});
 $("#cscheck").onclick=csDo("check","Checking the VM");$("#cssched").onclick=csDo("schedule","Scheduling");$("#csunsched").onclick=csDo("unschedule","Removing the schedule");
+
+// ---------------- AWS deploy
+let AWSAUTH="profile";
+function setAuth(a){AWSAUTH=a;$$("#awsauth button").forEach(b=>b.classList.toggle("on",b.dataset.a===a));$("#awsprof").style.display=a==="profile"?"":"none";$("#awskeys").style.display=a==="keys"?"":"none"}
+$$("#awsauth button").forEach(b=>b.onclick=()=>{setAuth(b.dataset.a);saveAws()});
+async function loadProfiles(){const r=await api("/api/aws/profiles");const cur=(CFG.aws||{}).profile||"";
+  $("#awsprofile").innerHTML='<option value="">default</option>'+r.profiles.filter(p=>p!=="default").map(p=>`<option>${esc(p)}</option>`).join("");$("#awsprofile").value=cur;
+  $("#awssecstate").textContent=r.has_secret?"saved in keychain":"not saved";$("#awssecstate").className="pill "+(r.has_secret?"ok":"")}
+$("#awsprofref").onclick=()=>loadProfiles().catch(()=>{});
+function awsAll(){return Object.assign(awsParams(),{auth:AWSAUTH,profile:$("#awsprofile").value,key_id:$("#awskid").value.trim()})}
+async function saveAws(){const body={aws:awsAll()};if($("#awssec").value)body.aws_secret=$("#awssec").value;await api("/api/config",body);$("#awssec").value="";await loadCfg()}
+$("#awsprofile").onchange=()=>saveAws().catch(()=>{});
+function showOuts(o){if(!o||!Object.keys(o).length){$("#awsouts").innerHTML="";return}
+  $("#awsouts").innerHTML=`<table style="margin-top:12px"><thead><tr><th>Output</th><th>Value</th></tr></thead><tbody>${Object.entries(o).map(([k,v])=>`<tr><td>${esc(k)}</td><td><code>${esc(v)}</code> <button data-cp="${esc(v)}">Copy</button></td></tr>`).join("")}</tbody></table>`;
+  $$("[data-cp]").forEach(b=>b.onclick=()=>{navigator.clipboard.writeText(b.dataset.cp);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1200)});
+  if(o.McpServerUrl&&!$("#mcpurl").value)$("#mcpurl").value=o.McpServerUrl}
+$("#awscheck").onclick=e=>busy(e.target,async()=>{$("#awserr").textContent="";$("#awswho").textContent="";
+  try{await saveAws();const r=await api("/api/aws/status");const s=r.stack;
+    $("#awswho").innerHTML=`<span class="pill ok">Account ${esc(r.identity.account)}</span> ${esc(r.identity.arn.split("/").pop())} · stack ${s?`<b>${esc(s.status)}</b>`:"not deployed"}`;
+    showOuts(s&&s.outputs)}catch(err){$("#awserr").textContent=err.message}});
+async function awsJob(path,body,btn){
+  const L=$("#awslog");L.style.display="";L.textContent="Starting…";$("#awserr").textContent="";
+  const {job}=await api(path,body);
+  for(;;){await sleep(3000);const j=await api("/api/jobs?id="+job);L.textContent=(j.log||[]).join("\n")+`\n… ${j.elapsed||0}s`;L.scrollTop=L.scrollHeight;
+    if(j.state==="done")return j.result;if(j.state==="error")throw new Error(j.error)}
+}
+$("#deploy").onclick=e=>busy(e.target,async()=>{
+  const p=awsAll();if(p.zpa&&(!p.ami||!$("#zpakey").value)){$("#awserr").textContent="The ZPA path needs the App Connector AMI ID and provisioning key.";return}
+  if(!confirm(`Deploy stack "${p.project}" to ${p.region}${p.zpa?" with the ZPA path (about $3–5/day)":""}?`))return;
+  try{await saveAws();const r=await awsJob("/api/aws/deploy",{mcp_token:$("#mcpnew").value,zpa_key:$("#zpakey").value});
+    $("#awslog").textContent+=`\nDone: ${r.status}`;showOuts(r.outputs);if(r.outputs&&r.outputs.McpServerUrl)$("#mcpurl").value=r.outputs.McpServerUrl;
+    if($("#mcpnew").value)$("#mcptok").value=$("#mcpnew").value}
+  catch(err){$("#awserr").textContent=err.message}});
+$("#awsdel").onclick=e=>{const p=awsAll();if(!confirm(`Delete stack "${p.project}" in ${p.region}? This removes the bucket, the MCP server${p.zpa?" and the App Connector":""}.`))return;
+  busy(e.target,async()=>{try{await saveAws();await awsJob("/api/aws/delete",{});$("#awslog").textContent+="\nDeleted.";showOuts(null)}catch(err){$("#awserr").textContent=err.message}})};
 
 // ---------------- AWS
 $("#zpa").onchange=e=>$("#zpaopts").style.display=e.target.checked?"":"none";
