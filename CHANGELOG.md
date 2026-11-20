@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.2
+- **Fix: the AWS stack hung on SeedData and then couldn't be deleted.** The seed function relied on CloudFormation's `cfnresponse` helper, which CloudFormation only adds when it spots a plain `import cfnresponse` line, and ours was a combined import, so the function crashed before it could answer. It now answers CloudFormation itself, and a delete always succeeds even if emptying the bucket fails.
+
 ## 0.4.1
 - If the seed function never answers CloudFormation, the stack now fails after 5 minutes instead of hanging for an hour.
 - While a deploy is waiting, the progress pane names the resource it's stuck on and for how long.

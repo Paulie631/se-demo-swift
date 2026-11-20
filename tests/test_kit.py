@@ -528,5 +528,47 @@ class AwsDeployTests(unittest.TestCase):
             self.assertNotIn(s, body)
 
 
+class SeedReplyTests(unittest.TestCase):
+    """The seed function must always answer CloudFormation itself (no cfnresponse), on create and delete."""
+    def test_replies_success_on_create_and_delete(self):
+        import http.server, importlib, threading
+        got = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_PUT(self):
+                got.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                self.send_response(200); self.end_headers()
+            def log_message(self, *a):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        put = []
+
+        class Bucket:
+            def __init__(self, name):
+                self.object_versions = types.SimpleNamespace(delete=lambda: (_ for _ in ()).throw(Exception("AccessDenied")))
+            def put_object(self, Key, Body):
+                put.append(Key)
+        fake = types.ModuleType("boto3"); fake.resource = lambda n: types.SimpleNamespace(Bucket=Bucket)
+        saved = sys.modules.get("boto3"); sys.modules["boto3"] = fake
+        sys.modules.pop("cfnresponse", None)
+        sys.path.insert(0, str(ROOT / "aws" / "src"))
+        try:
+            sys.modules.pop("seed", None)
+            seed = importlib.import_module("seed")
+            ctx = types.SimpleNamespace(log_stream_name="2026/11/20/[$LATEST]abc")
+            base = {"ResponseURL": f"http://127.0.0.1:{srv.server_address[1]}/resp", "StackId": "arn:stack/x",
+                    "RequestId": "r1", "LogicalResourceId": "SeedData", "ResourceProperties": {"Bucket": "b"}}
+            seed.handler(dict(base, RequestType="Create"), ctx)
+            seed.handler(dict(base, RequestType="Delete", PhysicalResourceId="seed-SeedData"), ctx)
+        finally:
+            srv.shutdown()
+            if saved: sys.modules["boto3"] = saved
+        self.assertEqual([g["Status"] for g in got], ["SUCCESS", "SUCCESS"])   # delete succeeds even if emptying fails
+        self.assertIn("customers/customers_export.csv", put)
+        self.assertEqual(got[0]["PhysicalResourceId"], "seed-SeedData")
+        self.assertNotIn("cfnresponse", (ROOT / "aws" / "src" / "seed.py").read_text())
+
+
 if __name__ == "__main__":
     unittest.main()
