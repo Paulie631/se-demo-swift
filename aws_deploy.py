@@ -98,12 +98,19 @@ def wait(sess, name: str, since: float, progress=None, timeout: int = 1800, poll
     """stack_id: read events by ID, which keeps working after a failed create deletes the stack."""
     cf = sess.client("cloudformation")
     seen, failures = set(), []
-    t0 = time.time()
+    t0 = last_new = last_note = time.time()
+    pending: dict = {}   # resources currently *_IN_PROGRESS -> when they started
     def drain():
         for e in _events(cf, stack_id or name, since):
             if e["EventId"] in seen:
                 continue
             seen.add(e["EventId"])
+            last_new = time.time()
+            lid, rs = e["LogicalResourceId"], e["ResourceStatus"]
+            if rs.endswith("_IN_PROGRESS") and lid != name:
+                pending.setdefault(lid, time.time())
+            else:
+                pending.pop(lid, None)
             line = f"{e['LogicalResourceId']}: {e['ResourceStatus']}"
             if "FAILED" in e["ResourceStatus"] and e.get("ResourceStatusReason"):
                 line += f" ({e['ResourceStatusReason'][:200]})"
@@ -113,6 +120,14 @@ def wait(sess, name: str, since: float, progress=None, timeout: int = 1800, poll
 
     while True:
         drain()
+        now = time.time()
+        if progress and pending and now - last_new > 120 and now - last_note > 60:
+            last_note = now
+            waits = ", ".join(f"{k} ({int((now - v) // 60)} min)" for k, v in sorted(pending.items(), key=lambda x: x[1]))
+            hint = (" The seed function times out after 5 minutes." if "SeedData" in pending else
+                    " NAT gateways, VPC endpoints and EC2 instances often take 3-5 minutes." if
+                    pending.keys() & {"NatGw", "QuickWebsiteEndpoint", "AppConnector"} else "")
+            progress(f"Still waiting on: {waits}.{hint}")
         st = stack(sess, name)
         if st is None or st["status"] in TERMINAL_OK | TERMINAL_BAD:
             drain()   # the final events (including failure reasons) can land in the same poll as the status

@@ -23,8 +23,9 @@ def files():
 	o['README_SYNTHETIC_DATA.txt']='All data in this bucket is synthetic and generated for a Zscaler demo. Card numbers are public test PANs. SSNs, names and keys are fake.'
 	return o
 def handler(e,c):
-	b=s3.Bucket(e['ResourceProperties']['Bucket'])
+	print({k:e.get(k) for k in('RequestType','LogicalResourceId','RequestId','StackId')})
 	try:
+		b=s3.Bucket(e['ResourceProperties']['Bucket'])
 		if e['RequestType']=='Delete':b.object_versions.delete()
 		else:
 			for k,v in files().items():b.put_object(Key=k,Body=v.encode())

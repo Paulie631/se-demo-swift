@@ -140,6 +140,7 @@ __SEED__
     DependsOn: DataBucketTlsOnly
     Properties:
       ServiceToken: !GetAtt SeedFunction.Arn
+      ServiceTimeout: 300   # if the seed Lambda never answers, fail in 5 minutes instead of CloudFormation's 1 hour
       Bucket: !Ref DataBucket
       Version: '1'
 

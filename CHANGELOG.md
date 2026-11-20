@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+- If the seed function never answers CloudFormation, the stack now fails after 5 minutes instead of hanging for an hour.
+- While a deploy is waiting, the progress pane names the resource it's stuck on and for how long.
+
 ## 0.4.0
 - **Deploy the AWS stack from the console:** Deploy stack / Delete stack with an AWS CLI profile or access keys, live progress, outputs filled in (the MCP check picks up the URL). A failed create cleans itself up and shows the reason.
 - `./quick-kit aws deploy|status|delete` on the command line.
