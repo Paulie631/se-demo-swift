@@ -71,40 +71,59 @@ def fake_csv(rows=25):
     return out.getvalue().encode()
 
 
-def hit(s, method, url, label, **kw):
+def hit(s, method, url, label, log=print, scenario="", **kw):
+    """Send one request; return a result dict (and log a one-line summary)."""
+    res = {"scenario": scenario, "label": label, "method": method, "url": url}
     try:
         r = s.request(method, url, timeout=20, allow_redirects=False, **kw)
         blocked = r.status_code == 403 and "zscaler" in r.text.lower()
+        res.update(status=r.status_code, outcome="blocked" if blocked else "passed")
         tag = "BLOCKED by Zscaler" if blocked else f"HTTP {r.status_code}"
-        print(f"  [{tag:>18}] {label}")
     except requests.exceptions.SSLError:
-        print(f"  [{'TLS ERROR':>18}] {label}  -> trust the Zscaler root CA (--ca-bundle / truststore)")
+        res.update(status=None, outcome="tls_error",
+                   fix="Trust the Zscaler root CA (--ca-bundle, or install truststore)")
+        tag = "TLS ERROR"
     except requests.RequestException as e:
-        print(f"  [{'ERROR':>18}] {label}  -> {e.__class__.__name__}")
+        res.update(status=None, outcome="error", fix=e.__class__.__name__)
+        tag = "ERROR"
+    log(f"  [{tag:>18}] {label}" + (f"  -> {res['fix']}" if res.get("fix") else ""))
+    return res
 
 
-def run(s, only):
-    region = random.choice(REGIONS)
+def run(s, only=None, log=print, region=None):
+    """One pass of the chosen scenarios. Returns a list of result dicts."""
+    region = region or random.choice(REGIONS)
     base = f"https://{region}.quicksight.aws.amazon.com"
+    out = []
+    js = {"Content-Type": "application/json"}
 
     if only in (None, "visibility"):
-        print(f"\n> Visibility ({region})")
+        log(f"> Visibility ({region})")
         for path in ["/sn/start", "/sn/start/agents", "/sn/start/flows", "/sn/start/research"]:
-            hit(s, "GET", base + path, f"GET {path}")
+            out.append(hit(s, "GET", base + path, f"GET {path}", log, "visibility"))
         for p in BENIGN_PROMPTS:
-            hit(s, "POST", base + "/zs-demo/chat", f"benign prompt: {p[:45]}...",
-                data=json.dumps({"prompt": p}), headers={"Content-Type": "application/json"})
+            out.append(hit(s, "POST", base + "/zs-demo/chat", f"benign prompt: {p[:45]}...", log, "visibility",
+                           data=json.dumps({"prompt": p}), headers=js))
 
     if only in (None, "dlp"):
-        print(f"\n> DLP on prompts ({region})")
+        log(f"> DLP on prompts ({region})")
         for kind, p in RISKY_PROMPTS:
-            hit(s, "POST", base + "/zs-demo/chat", f"{kind} prompt",
-                data=json.dumps({"prompt": p}), headers={"Content-Type": "application/json"})
+            out.append(hit(s, "POST", base + "/zs-demo/chat", f"{kind} prompt", log, "dlp",
+                           data=json.dumps({"prompt": p}), headers=js))
 
     if only in (None, "upload"):
-        print(f"\n> DLP on uploads ({region})")
-        hit(s, "POST", base + "/zs-demo/spaces/upload", "customers_export.csv -> Quick Space",
-            files={"file": ("customers_export.csv", fake_csv(), "text/csv")})
+        log(f"> DLP on uploads ({region})")
+        out.append(hit(s, "POST", base + "/zs-demo/spaces/upload", "customers_export.csv -> Quick Space", log,
+                       "upload", files={"file": ("customers_export.csv", fake_csv(), "text/csv")}))
+    return out
+
+
+def session(ca_bundle=None):
+    s = requests.Session()
+    s.headers["User-Agent"] = UA
+    if ca_bundle:
+        s.verify = ca_bundle
+    return s
 
 
 def main():
@@ -116,10 +135,7 @@ def main():
     ap.add_argument("--ca-bundle", help="path to Zscaler root CA / bundle")
     a = ap.parse_args()
 
-    s = requests.Session()
-    s.headers["User-Agent"] = UA
-    if a.ca_bundle:
-        s.verify = a.ca_bundle
+    s = session(a.ca_bundle)
 
     print("Amazon Quick demo traffic -> make sure Zscaler Client Connector is ON.")
     for i in range(a.loops):

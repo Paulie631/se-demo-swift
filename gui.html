@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Amazon Quick Demo Console</title>
+<link rel="icon" href="data:,">
+<style>
+:root{
+  --bg:#f6f7f9;--panel:#fff;--ink:#14171c;--muted:#5d6673;--line:#e3e6eb;--soft:#eef1f5;
+  --accent:#1f5eff;--accent-ink:#fff;--ok:#127a3e;--ok-bg:#e3f4ea;--warn:#9a5b00;--warn-bg:#fdf1dc;
+  --bad:#b42318;--bad-bg:#fde8e6;--chip:#eef2ff;--chip-ink:#2a3f99;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f1115;--panel:#171a20;--ink:#e8eaee;--muted:#9aa3b0;--line:#2a2f38;--soft:#1f232b;
+  --accent:#5b8cff;--accent-ink:#0b0d12;--ok:#4cc77f;--ok-bg:#16301f;--warn:#e6a23c;--warn-bg:#33270f;
+  --bad:#ff7a6e;--bad-bg:#3a1714;--chip:#1e2747;--chip-ink:#a9bcff;}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:-.01em}
+header .meta{color:var(--muted);font-size:13px}
+header .sp{flex:1}
+nav.tabs{display:flex;gap:4px;padding:0 24px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:53px;z-index:4;overflow-x:auto}
+nav.tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;padding:10px 14px;background:none;color:var(--muted);font-weight:600;white-space:nowrap}
+nav.tabs button.on{color:var(--ink);border-bottom-color:var(--accent)}
+.view{display:none}.view.on{display:block}
+.wrap{padding:20px 24px;max-width:1200px;margin:0 auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px;font-weight:600}
+.panel p{margin:0 0 10px}
+.stack>*+*{margin-top:16px}
+button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:6px 11px;cursor:pointer}
+button:hover{background:var(--soft)}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600;padding:8px 18px}
+button.danger{color:var(--bad);border-color:var(--bad)}
+button:disabled{opacity:.5;cursor:default}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.field{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
+.lbl{font-size:12px;color:var(--muted)}
+input[type=text],input[type=password],select,textarea{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:100%}
+textarea{font-family:var(--mono);font-size:12px;min-height:70px}
+.hint{font-size:12px;color:var(--muted)}
+.pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:99px;background:var(--soft);color:var(--muted)}
+.pill.ok{background:var(--ok-bg);color:var(--ok)}.pill.bad{background:var(--bad-bg);color:var(--bad)}.pill.warn{background:var(--warn-bg);color:var(--warn)}
+pre.out{background:var(--soft);border-radius:8px;padding:10px 12px;font:12px/1.5 var(--mono);white-space:pre-wrap;max-height:360px;overflow:auto;margin:10px 0 0}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;color:var(--muted);font-weight:600}
+.v-blocked{color:var(--bad);font-weight:600}.v-passed{color:var(--muted)}.v-tls_error,.v-error{color:var(--warn);font-weight:600}
+.banner{border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px}
+.banner.warn{background:var(--warn-bg);color:var(--warn)}.banner.ok{background:var(--ok-bg);color:var(--ok)}.banner.bad{background:var(--bad-bg);color:var(--bad)}
+label.check{display:flex;gap:8px;align-items:flex-start;cursor:pointer}label.check input{margin-top:3px}
+.err{color:var(--bad);font-size:13px;margin-top:8px}
+.steps{counter-reset:s;list-style:none;padding:0;margin:0}
+.steps li{counter-increment:s;position:relative;padding:0 0 12px 30px}
+.steps li::before{content:counter(s);position:absolute;left:0;top:0;width:20px;height:20px;border-radius:50%;background:var(--chip);color:var(--chip-ink);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+code{font-family:var(--mono);font-size:12px;background:var(--soft);padding:1px 5px;border-radius:4px}
+/* guided demo */
+.demo{display:grid;grid-template-columns:260px 1fr;gap:16px}
+.acts button{display:block;width:100%;text-align:left;margin-bottom:6px;padding:9px 12px}
+.acts button.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+.acts small{display:block;color:var(--muted);font-weight:400}
+.say{border-left:3px solid var(--accent);padding:6px 12px;margin:10px 0;font-size:15px}
+.prompt{display:flex;gap:8px;align-items:flex-start;background:var(--soft);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:13px}
+.prompt span{flex:1;font-family:var(--mono);font-size:12px;overflow-wrap:anywhere}
+.tag{font:600 10px var(--mono);padding:2px 6px;border-radius:4px;background:var(--chip);color:var(--chip-ink);text-transform:uppercase}
+.notes{background:var(--warn-bg);color:var(--warn);border-radius:8px;padding:8px 12px;font-size:13px;margin-top:10px}
+body.present .notes,body.present .presenter{display:none}
+.logline{font:12px/1.5 var(--mono);padding:2px 0;border-bottom:1px dashed var(--line)}
+.logline .k{display:inline-block;min-width:64px;color:var(--muted)}
+.logline.error{color:var(--bad)}.logline.ok{color:var(--ok)}
+@media (max-width:760px){.demo{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Amazon Quick Demo Console</h1>
+  <span class="meta" id="tenant">Not connected</span>
+  <span class="sp"></span>
+  <label class="row hint"><input type="checkbox" id="present"> Presenting (hide talk track)</label>
+  <span class="meta" id="ver"></span>
+  <button id="quit" title="Stop the console">Quit</button>
+</header>
+<nav class="tabs" id="tabs">
+  <button data-v="setup" class="on">Setup</button>
+  <button data-v="demo">Guided demo</button>
+  <button data-v="traffic">Traffic</button>
+  <button data-v="aws">AWS environment</button>
+  <button data-v="logs">Logs</button>
+</nav>
+
+<!-- ============================== SETUP ============================== -->
+<section class="view on" id="v-setup"><div class="wrap">
+  <div class="banner warn">Demo and eval tenants only. Everything the kit creates is named <b>… (Demo)</b>, and <b>Remove demo policy</b> deletes all of it.</div>
+  <div class="grid">
+    <div class="panel">
+      <h2>1 · Connect to ZIA (OneAPI)</h2>
+      <div class="field"><span class="lbl">Vanity domain (the <code>acme</code> in acme.zslogin.net)</span><input type="text" id="vanity" placeholder="acme"></div>
+      <div class="field"><span class="lbl">Client ID</span><input type="text" id="cid" autocomplete="off"></div>
+      <div class="field"><span class="lbl">Client secret <span id="secstate" class="pill">not saved</span></span><input type="password" id="sec" placeholder="Leave blank to keep the saved secret" autocomplete="new-password"></div>
+      <details><summary class="hint">Advanced</summary>
+        <div class="field" style="margin-top:8px"><span class="lbl">CA bundle path (only if SSL inspection breaks API calls and the OS store doesn't work)</span><input type="text" id="ca"></div>
+        <div class="field"><span class="lbl">DLP engines to use (names, comma separated; substring match)</span><input type="text" id="engines"></div>
+      </details>
+      <div class="row"><button class="primary" id="save">Save &amp; test</button><span id="conn"></span></div>
+      <p class="hint" style="margin-top:10px">The secret goes to your OS keychain. Give the API client the ZIA policy-admin role under Administration › API › OneAPI.</p>
+      <div class="err" id="connerr"></div>
+    </div>
+    <div class="panel">
+      <h2>2 · Demo policy in ZIA</h2>
+      <p>Creates a custom URL category for Quick's domains, a <b>Caution</b> rule (usage-policy coaching page) and a <b>Block</b> Web DLP rule (PCI / PII / GLBA), then activates.</p>
+      <div class="row">
+        <button id="status">Check status</button>
+        <button id="preview">Preview changes</button>
+        <button class="primary" id="apply">Create &amp; activate</button>
+        <button class="danger" id="teardown">Remove demo policy</button>
+      </div>
+      <table id="stable" style="margin-top:12px;display:none"><thead><tr><th>Object</th><th>Type</th><th>State</th></tr></thead><tbody></tbody></table>
+      <pre class="out" id="ziaout" style="display:none"></pre>
+      <div class="err" id="ziaerr"></div>
+    </div>
+    <div class="panel">
+      <h2>3 · By hand, once</h2>
+      <ol class="steps">
+        <li>Turn on <b>SSL inspection</b> for the <code>Amazon Quick (Demo)</code> category. Without it, DLP can't see prompts.</li>
+        <li>Edit the Caution notification text so it's Quick-specific (Administration › End User Notifications).</li>
+        <li>Optional: set up an <b>Incident Receiver</b> so DLP incidents show evidence.</li>
+        <li>Demo laptop: Client Connector in tunnel mode, signed in as the demo user.</li>
+        <li>Check the Cloud App catalog for "Amazon Quick". If it's listed, Cloud App Control works too.</li>
+      </ol>
+      <details><summary class="hint">Domains in the URL category</summary><pre class="out" id="urls"></pre></details>
+    </div>
+  </div>
+</div></section>
+
+<!-- ============================== GUIDED DEMO ============================== -->
+<section class="view" id="v-demo"><div class="wrap">
+  <div class="demo">
+    <div class="acts" id="acts"></div>
+    <div class="panel" id="act"></div>
+  </div>
+</div></section>
+
+<!-- ============================== TRAFFIC ============================== -->
+<section class="view" id="v-traffic"><div class="wrap stack">
+  <div class="panel">
+    <h2>Generate Amazon Quick traffic</h2>
+    <p>Sends Quick-shaped requests from this laptop through Client Connector. All data is synthetic. Requests carry no AWS credentials, so AWS answers with an error code, but ZIA inspects, logs or blocks each one first. Run a few passes 30–60 minutes before a demo so the dashboards have data.</p>
+    <div class="row">
+      <label><input type="checkbox" class="sc" value="visibility" checked> Visibility (browsing + benign prompts)</label>
+      <label><input type="checkbox" class="sc" value="dlp" checked> DLP on prompts</label>
+      <label><input type="checkbox" class="sc" value="upload" checked> DLP on uploads</label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label class="row hint">Passes <select id="loops" style="width:auto"><option>1</option><option>3</option><option>5</option></select></label>
+      <label class="row hint">Region <select id="region" style="width:auto"><option value="">Random</option></select></label>
+      <button class="primary" id="run">Send traffic</button><span id="runstate" class="hint"></span>
+    </div>
+    <div class="err" id="trferr"></div>
+  </div>
+  <div class="panel" id="trfres" style="display:none">
+    <h2>Results</h2>
+    <div class="row" id="trfsum" style="margin-bottom:10px"></div>
+    <table><thead><tr><th>Outcome</th><th>Scenario</th><th>Request</th><th>HTTP</th></tr></thead><tbody id="trfrows"></tbody></table>
+    <p class="hint" style="margin-top:10px"><b>blocked</b> = ZIA stopped it (DLP worked). <b>passed</b> = reached AWS (expected for visibility; for DLP rows, check SSL inspection and rule order). <b>tls error</b> = Python doesn't trust the Zscaler root CA: set a CA bundle on Setup.</p>
+  </div>
+</div></section>
+
+<!-- ============================== AWS ============================== -->
+<section class="view" id="v-aws"><div class="wrap">
+  <div class="grid">
+    <div class="panel">
+      <h2>1 · Build the CloudFormation template</h2>
+      <p>One stack: a private S3 bucket of synthetic sensitive data (for Quick knowledge bases and DSPM), a <b>deliberately vulnerable</b> MCP server (for AI Guard, AI-SPM and red teaming) and, optionally, a ZPA App Connector with a Quick PrivateLink path.</p>
+      <div class="field"><span class="lbl">Project name (prefix for resources)</span><input type="text" id="proj" value="zs-quick-demo"></div>
+      <div class="field"><span class="lbl">Region (must be a Quick region)</span><select id="awsregion"></select></div>
+      <label class="check"><input type="checkbox" id="zpa"> Add the ZPA path (VPC, Quick PrivateLink, App Connector · about $3–5/day)</label>
+      <div id="zpaopts" style="display:none;margin-top:10px">
+        <div class="field"><span class="lbl">Zscaler App Connector AMI ID for this region (subscribe in AWS Marketplace first)</span><input type="text" id="ami" placeholder="ami-…"></div>
+        <div class="field"><span class="lbl">Instance type</span><select id="itype"><option>m5a.large</option><option>t3.medium</option><option>m5.large</option><option>m6i.large</option></select></div>
+        <div class="field"><span class="lbl">EC2 key pair (optional)</span><input type="text" id="keypair"></div>
+      </div>
+      <div class="row" style="margin-top:6px"><button class="primary" id="dl">Download template</button><a id="cfnlink" target="_blank" rel="noopener">Open CloudFormation console ↗</a></div>
+      <p class="hint" style="margin-top:10px">Secrets stay out of the file. You type the MCP token and ZPA provisioning key into the console's parameter page (they're hidden fields).</p>
+      <div class="err" id="awserr"></div>
+    </div>
+    <div class="panel">
+      <h2>2 · Deploy &amp; wire to Quick</h2>
+      <ol class="steps">
+        <li>CloudFormation › <b>Create stack</b> › <b>Upload a template file</b> › the downloaded file. Tick the IAM acknowledgement.</li>
+        <li>Quick console: give Quick access to the stack's <code>DataBucketName</code>, then create an <b>S3 knowledge base</b> on it and add it to a chat agent or Space.</li>
+        <li>Quick console › Integrations › <b>MCP</b>: URL = <code>McpServerUrl</code>, service auth <b>None</b> (or a custom <code>Authorization: Bearer …</code> header if you set a token). MCP integrations need Quick Enterprise.</li>
+        <li>ZPA path: create an app segment for <code>&lt;region&gt;.quicksight.aws.amazon.com</code> (TCP 443) on the new connector group.</li>
+        <li><b>Delete the stack after the demo.</b> The bucket is emptied automatically.</li>
+      </ol>
+    </div>
+    <div class="panel">
+      <h2>3 · Check the MCP server</h2>
+      <p>Calls the server from this laptop the way Quick would: initialize, list tools, then the poisoned <code>get_vendor_profile</code>.</p>
+      <div class="field"><span class="lbl">McpServerUrl (stack output)</span><input type="text" id="mcpurl" placeholder="https://….lambda-url.us-east-1.on.aws/"></div>
+      <div class="field"><span class="lbl">Token (only if you set McpToken)</span><input type="password" id="mcptok"></div>
+      <button id="mcptest">Run check</button>
+      <div id="mcpres"></div>
+      <div class="err" id="mcperr"></div>
+    </div>
+  </div>
+</div></section>
+
+<!-- ============================== LOGS ============================== -->
+<section class="view" id="v-logs"><div class="wrap">
+  <div class="panel">
+    <div class="row" style="margin-bottom:10px"><h2 style="margin:0">Activity</h2><span class="sp" style="flex:1"></span><button id="logref">Refresh</button><button id="logclr">Clear</button></div>
+    <p class="hint">Everything the kit does. Secrets are never logged. The full log file is <code>~/.quick-se-kit/kit.log</code>.</p>
+    <div id="loglist"></div>
+  </div>
+</div></section>
+
+<script>
+const TOKEN="__KIT_TOKEN__";
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const api=(p,b)=>fetch(p,{method:b?"POST":"GET",headers:{"X-Kit-Token":TOKEN,"Content-Type":"application/json"},body:b?JSON.stringify(b):undefined})
+  .then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.statusText);return j});
+async function busy(btn,fn){const t=btn.textContent;btn.disabled=true;btn.textContent="Working…";try{return await fn()}finally{btn.disabled=false;btn.textContent=t}}
+
+// tabs
+$$("#tabs button").forEach(b=>b.onclick=()=>{$$("#tabs button").forEach(x=>x.classList.toggle("on",x===b));$$(".view").forEach(v=>v.classList.toggle("on",v.id==="v-"+b.dataset.v));if(b.dataset.v==="logs")loadLogs();try{localStorage.setItem("qk-tab",b.dataset.v)}catch(e){}});
+try{const t=localStorage.getItem("qk-tab");if(t)$(`#tabs button[data-v="${t}"]`)?.click()}catch(e){}
+$("#present").onchange=e=>document.body.classList.toggle("present",e.target.checked);
+
+// ---------------- setup
+let CFG={};
+async function loadCfg(){
+  CFG=await api("/api/config");
+  $("#ver").textContent="v"+CFG.version;
+  $("#vanity").value=CFG.vanity||"";$("#cid").value=CFG.client_id||"";$("#ca").value=CFG.ca_bundle||"";
+  $("#engines").value=(CFG.engines||[]).join(", ");
+  $("#secstate").textContent=CFG.has_secret?"saved in keychain":"not saved";$("#secstate").className="pill "+(CFG.has_secret?"ok":"");
+  $("#tenant").textContent=CFG.vanity?`Tenant: ${CFG.vanity}.zslogin.net`:"Not connected";
+  $("#urls").textContent=(CFG.category_urls||[]).join("\n");
+  const opts=(CFG.regions||[]).map(r=>`<option>${r}</option>`).join("");
+  $("#region").insertAdjacentHTML("beforeend",opts);$("#awsregion").innerHTML=opts;
+  const a=CFG.aws||{};if(a.project)$("#proj").value=a.project;if(a.region)$("#awsregion").value=a.region;
+  if(a.zpa){$("#zpa").checked=true;$("#zpaopts").style.display=""}if(a.ami)$("#ami").value=a.ami;if(a.keypair)$("#keypair").value=a.keypair;if(a.instance_type)$("#itype").value=a.instance_type;
+  cfnLink();
+}
+$("#save").onclick=e=>busy(e.target,async()=>{
+  $("#connerr").textContent="";$("#conn").innerHTML="";
+  try{
+    const r=await api("/api/config",{vanity:$("#vanity").value,client_id:$("#cid").value,secret:$("#sec").value,ca_bundle:$("#ca").value,engines:$("#engines").value.split(",")});
+    $("#sec").value="";await loadCfg();
+    await api("/api/zia/test",{});$("#conn").innerHTML='<span class="pill ok">Connected</span>';
+  }catch(err){$("#conn").innerHTML='<span class="pill bad">Not connected</span>';$("#connerr").textContent=err.message}
+});
+function showOut(t){const o=$("#ziaout");o.style.display="";o.textContent=t}
+$("#status").onclick=e=>busy(e.target,async()=>{
+  $("#ziaerr").textContent="";
+  try{const r=await api("/api/zia/status");const tb=$("#stable");tb.style.display="";
+    tb.querySelector("tbody").innerHTML=r.items.map(i=>`<tr><td>${esc(i.name)}</td><td>${esc(i.type)}</td><td>${i.exists?`<span class="pill ok">present</span> <span class="hint">${esc(i.detail)}</span>`:'<span class="pill">missing</span>'}</td></tr>`).join("");
+  }catch(err){$("#ziaerr").textContent=err.message}
+});
+const ziaRun=(apply,teardown)=>async e=>{
+  if(apply&&teardown&&!confirm("Delete the kit's demo URL category and rules from ZIA and activate?"))return;
+  if(apply&&!teardown&&!confirm("Create the demo policy in ZIA and activate it now?"))return;
+  await busy(e.target,async()=>{$("#ziaerr").textContent="";
+    try{const r=await api("/api/zia/run",{apply,teardown});showOut(r.output||"(no output)");if(apply)$("#status").click()}
+    catch(err){$("#ziaerr").textContent=err.message}});
+};
+$("#preview").onclick=ziaRun(false,false);$("#apply").onclick=ziaRun(true,false);$("#teardown").onclick=ziaRun(true,true);
+
+// ---------------- traffic
+async function sendTraffic(scenarios,loops,btn){
+  $("#trferr").textContent="";$("#runstate").textContent="Sending… this takes up to a minute per pass.";
+  try{
+    const r=await api("/api/traffic",{scenarios,loops,region:$("#region").value});
+    $("#trfres").style.display="";
+    const s=r.summary||{};
+    $("#trfsum").innerHTML=Object.entries(s).map(([k,v])=>`<span class="pill ${k==="blocked"?"bad":k==="passed"?"":"warn"}">${esc(k.replace("_"," "))}: ${v}</span>`).join("")||'<span class="pill">no requests</span>';
+    $("#trfrows").innerHTML=r.results.map(x=>`<tr><td class="v-${x.outcome}">${esc(x.outcome.replace("_"," "))}</td><td>${esc(x.scenario)}</td><td>${esc(x.label)}${x.fix?`<div class="hint">${esc(x.fix)}</div>`:""}</td><td>${x.status??"—"}</td></tr>`).join("");
+    $("#runstate").textContent="Done. Check ZIA Web Insights and DLP incidents in a few minutes.";
+    return r;
+  }catch(err){$("#trferr").textContent=err.message;$("#runstate").textContent=""}
+}
+$("#run").onclick=e=>busy(e.target,()=>sendTraffic($$(".sc:checked").map(x=>x.value),+$("#loops").value));
+
+// ---------------- AWS
+$("#zpa").onchange=e=>$("#zpaopts").style.display=e.target.checked?"":"none";
+function awsParams(){return{project:$("#proj").value,region:$("#awsregion").value,zpa:$("#zpa").checked,ami:$("#ami").value,instance_type:$("#itype").value,keypair:$("#keypair").value}}
+function cfnLink(){const r=$("#awsregion").value||"us-east-1";$("#cfnlink").href=`https://${r}.console.aws.amazon.com/cloudformation/home?region=${r}#/stacks/create`}
+$("#awsregion").onchange=cfnLink;
+$("#dl").onclick=e=>busy(e.target,async()=>{
+  $("#awserr").textContent="";const p=awsParams();
+  if(p.zpa&&!p.ami){$("#awserr").textContent="The ZPA path needs the App Connector AMI ID for this region.";return}
+  try{
+    api("/api/config",{aws:p}).catch(()=>{});
+    const r=await fetch("/api/aws/template",{method:"POST",headers:{"X-Kit-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify(p)});
+    if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.statusText);
+    const a=document.createElement("a");a.href=URL.createObjectURL(await r.blob());a.download="quick-demo-env.yaml";a.click();
+  }catch(err){$("#awserr").textContent=err.message}
+});
+$("#mcptest").onclick=e=>busy(e.target,async()=>{
+  $("#mcperr").textContent="";$("#mcpres").innerHTML="";
+  try{const r=await api("/api/aws/mcp-test",{url:$("#mcpurl").value,token:$("#mcptok").value});
+    $("#mcpres").innerHTML=`<p style="margin-top:12px">${r.ok?'<span class="pill ok">MCP server is working</span>':'<span class="pill bad">Check failed</span>'} <span class="hint">Tools: ${esc(r.tools.join(", ")||"none")}</span></p>
+    <table><thead><tr><th>Step</th><th>Result</th><th>ms</th></tr></thead><tbody>${r.steps.map(s=>`<tr><td>${esc(s.step)}</td><td>${s.ok?'<span class="pill ok">'+s.status+'</span>':'<span class="pill bad">'+esc(s.status??"error")+'</span>'} <span class="hint">${esc(s.note||"")}</span></td><td>${s.ms??""}</td></tr>`).join("")}</tbody></table>
+    ${(()=>{const v=r.steps.find(s=>s.step.includes("vendor"));const t=v?.response?.result?.content?.[0]?.text;return t?`<p class="hint" style="margin-top:10px">Poisoned tool output (what an agent would read):</p><pre class="out">${esc(t)}</pre>`:""})()}`;
+  }catch(err){$("#mcperr").textContent=err.message}
+});
+
+$("#quit").onclick=async()=>{if(!confirm("Stop the demo console?"))return;await api("/api/quit",{}).catch(()=>{});document.body.innerHTML='<div class="wrap"><div class="panel"><h2>Console stopped</h2><p>Open it again from the desktop shortcut or <code>./quick-kit gui</code>.</p></div></div>'};
+
+// ---------------- logs
+async function loadLogs(){const r=await api("/api/logs");$("#loglist").innerHTML=r.logs.slice().reverse().map(l=>`<div class="logline ${esc(l.kind)}"><span class="k">${esc(l.t)}</span><span class="k">${esc(l.kind)}</span>${esc(l.msg)}</div>`).join("")||'<p class="hint">Nothing yet.</p>'}
+$("#logref").onclick=loadLogs;$("#logclr").onclick=async()=>{await api("/api/logs/clear",{});loadLogs()};
+
+// ---------------- guided demo
+const P={
+ benign:"Show me Q3 pipeline by region as a bar chart.",
+ pii:"Summarize this customer complaint: Jane Rivera, SSN 512-44-7381, DOB 03/14/1986, lives at 42 Harbor Rd, Huntington NY 11743.",
+ pci:"Build a chart of these failed payments: 4111 1111 1111 1111 exp 09/28, 5500 0000 0000 0004 exp 11/27.",
+ secret:"Why does this fail? aws_access_key_id=AKIAIOSFODNN7EXAMPLE aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+ vendor:"Summarize our vendor onboarding guide.",
+ comp:"What do our directors earn?",
+ mcp:"Get the vendor profile for Acme."
+};
+const ACTS=[
+ {t:"Discover",m:5,tag:"Visibility",say:"Before you can secure Amazon Quick, you need to see it: who's using it, how much data goes in, and what other AI sits beside it.",
+  show:["AI Asset Management / AI app usage dashboard","Web Insights filtered to URL category <b>Amazon Quick (Demo)</b>: users, departments, bytes up vs down","Shadow AI next to Quick, and AI embedded in sanctioned SaaS","AI-BOM: the models, MCP servers and dev tools behind Quick's connectors"],
+  run:{label:"Send visibility traffic",sc:["visibility"]},
+  notes:"Upload-heavy users are the story: lots of bytes up to an AI app means data is leaving. Discovery question: who approved Quick, and for which data?"},
+ {t:"Govern access",m:5,tag:"Access",say:"Quick is sanctioned, on your terms. Users see the rules before they start, and you decide who gets in from where.",
+  show:["Open Quick: the <b>Caution</b> page coaches the user, then lets them through","The URL filtering rule: scope by group, isolate on unmanaged devices, block unused regions","Optional architecture: Quick locked to a PrivateLink endpoint, reachable only through ZPA"],
+  notes:"Validate the ZPA + PrivateLink design with an AWS SA before promising it. The AWS tab can build the demo version of this."},
+ {t:"Protect data in prompts",m:8,tag:"DLP",say:"Here's the moment that matters: sensitive data going into an AI prompt. We stop that, and only that.",
+  show:["Paste the PII prompt into Quick chat: blocked, with a user notification","Upload customers_export.csv to a Space: blocked","Benign prompt: works. We enable Quick, we don't stop it","DLP incident: user, app, engine hit, evidence"],
+  prompts:["benign","pii","pci","secret"],run:{label:"Send DLP traffic (no Quick account needed)",sc:["dlp","upload"]},
+  notes:"If prompt extraction covers Quick in this tenant, show the prompt log. If it doesn't, say so: DLP still inspects the full request body."},
+ {t:"Agentic Quick",m:7,tag:"Agents · MCP",say:"Quick doesn't just chat. It acts, through a browser extension, a desktop app and MCP tools. That's where the next risks are.",
+  show:["Browser extension: send a page with fake PII to chat. Blocked, same inspected path","Desktop app connectors: local MCP servers and coding agents. Position Endpoint AI Security","MCP connector to the demo server: the poisoned tool tries to exfiltrate customer data","AI Guard in front of the customer's own MCP/API tools; AI Broker for MCP policy"],
+  prompts:["mcp"],mcp:true,
+  notes:"AWS's docs say coding agents like Claude Code run with full access under Quick (ACP permissions aren't enforced). Confirm Endpoint AI Security and AI Broker availability before demoing live."},
+ {t:"The data Quick can see",m:5,tag:"DSPM",say:"Quick is only as safe as what it can read. We tell you what that is before an agent tells someone else.",
+  show:["Quick knowledge base on the demo S3 bucket","Ask the comp question: Quick answers from the HR file","DSPM: the bucket holds SSNs, cards and compensation data","AI Access Graph: who and what can reach it"],
+  prompts:["comp","vendor"],
+  notes:"The vendor guide hides an indirect prompt injection. Whether Quick follows it is the risk AI Red Teaming finds before rollout. Quick's cloud connectors run AWS-to-SaaS, not through ZIA: say so."},
+ {t:"Build-time assurance",m:5,tag:"AI-SPM · Red team",say:"Business users are building agents and connectors on Quick. Prove they're safe before they ship.",
+  show:["AI-SPM: the MCP server's public, unauthenticated Lambda URL and its permissions","AI Red Teaming: scan results against the MCP server (injection, jailbreak, data leak)","Prompt hardening: a Quick agent's instructions, before and after","Compliance heat map: NIST AI RMF, EU AI Act, OWASP LLM Top 10"],
+  notes:"Confirm red teaming can target a Quick agent directly (it needs a reachable endpoint); if not, target the MCP server. Close: discover, control, protect, prove, on one platform."}
+];
+let cur=0;
+function renderActs(){$("#acts").innerHTML=ACTS.map((a,i)=>`<button class="${i===cur?"on":""}" data-i="${i}">${i+1}. ${esc(a.t)}<small>${a.m} min · ${esc(a.tag)}</small></button>`).join("")+`<p class="hint">Total about ${ACTS.reduce((s,a)=>s+a.m,0)} minutes. Use ← → to move.</p>`;
+  $$("#acts button").forEach(b=>b.onclick=()=>{cur=+b.dataset.i;renderActs();renderAct()})}
+function renderAct(){
+  const a=ACTS[cur];
+  $("#act").innerHTML=`<div class="row"><span class="tag">${esc(a.tag)}</span><span class="hint">Act ${cur+1} of ${ACTS.length} · ${a.m} min</span></div>
+   <h2 style="font-size:18px;text-transform:none;letter-spacing:0;color:var(--ink);margin:8px 0 0">${esc(a.t)}</h2>
+   <div class="say presenter"><span class="lbl">Say</span><br>${esc(a.say)}</div>
+   <p class="lbl" style="margin:12px 0 4px">Show</p><ul style="margin:0;padding-left:20px">${a.show.map(s=>`<li>${s}</li>`).join("")}</ul>
+   ${a.prompts?`<p class="lbl" style="margin:14px 0 4px">Prompts to paste into Quick (synthetic data)</p>${a.prompts.map(k=>`<div class="prompt"><span>${esc(P[k])}</span><button data-copy="${k}">Copy</button></div>`).join("")}`:""}
+   <div class="row" style="margin-top:14px">
+     ${a.run?`<button class="primary" id="actrun">${esc(a.run.label)}</button>`:""}
+     ${a.mcp?`<button id="actmcp">Check the MCP server ›</button>`:""}
+     <span class="sp" style="flex:1"></span>
+     <button id="prev" ${cur?"":"disabled"}>← Back</button><button id="next" ${cur<ACTS.length-1?"":"disabled"}>Next →</button>
+   </div>
+   <div id="actout" class="hint" style="margin-top:10px"></div>
+   <div class="notes">${esc(a.notes)}</div>`;
+  $$("[data-copy]").forEach(b=>b.onclick=()=>{navigator.clipboard.writeText(P[b.dataset.copy]);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1200)});
+  $("#prev").onclick=()=>{cur--;renderActs();renderAct()};$("#next").onclick=()=>{cur++;renderActs();renderAct()};
+  if(a.run)$("#actrun").onclick=e=>busy(e.target,async()=>{$("#actout").textContent="Sending…";const r=await sendTraffic(a.run.sc,1);
+    $("#actout").innerHTML=r?`Sent ${r.results.length} requests: ${Object.entries(r.summary).map(([k,v])=>`${v} ${esc(k.replace("_"," "))}`).join(", ")}. Details are on the Traffic tab.`:`<span class="err">${esc($("#trferr").textContent)}</span>`});
+  if(a.mcp)$("#actmcp").onclick=()=>$('#tabs button[data-v="aws"]').click();
+}
+document.addEventListener("keydown",e=>{if(!$("#v-demo").classList.contains("on")||/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))return;
+  if(e.key==="ArrowRight"&&cur<ACTS.length-1){cur++;renderActs();renderAct()}if(e.key==="ArrowLeft"&&cur>0){cur--;renderActs();renderAct()}});
+renderActs();renderAct();
+loadCfg().catch(e=>$("#tenant").textContent="Console error: "+e.message);
+</script>
+</body>
+</html>

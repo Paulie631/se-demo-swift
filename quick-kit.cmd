@@ -1,0 +1,14 @@
+@echo off
+rem Launcher for the Amazon Quick SE demo kit (Windows). Usage: .\quick-kit.cmd gui^|setup^|status^|traffic^|template
+if exist "%USERPROFILE%\.local\bin\uv.exe" set "PATH=%USERPROFILE%\.local\bin;%PATH%"
+where uv >nul 2>nul
+if errorlevel 1 (
+  echo uv is not installed. In PowerShell run:
+  echo   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  echo then open a new terminal and run this command again.
+  exit /b 1
+)
+set UV_SYSTEM_CERTS=1
+set UV_NATIVE_TLS=1
+set PYTHONUTF8=1
+uv run --quiet --python 3.12 --script "%~dp0quick_kit.py" %* & exit /b
