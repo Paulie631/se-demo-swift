@@ -1,0 +1,378 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Zscaler x Amazon Quick demo environment. Synthetic sensitive data in S3 (for Quick
+  knowledge bases and DSPM), a deliberately vulnerable MCP server (for AI Guard, AI-SPM
+  and AI Red Teaming), and an optional ZPA App Connector + Quick PrivateLink path.
+  ALL DATA IS SYNTHETIC. Do not load real customer data.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks: [W2506, W1030]  # AMI param is optional (only used when EnableZpaPath=true)
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: Core}
+        Parameters: [ProjectName, McpToken]
+      - Label: {default: Optional - Quick reachable only through ZPA}
+        Parameters: [EnableZpaPath, ZpaProvisioningKey, AppConnectorAmiId, AppConnectorInstanceType, KeyPairName, VpcCidr]
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: zs-quick-demo
+    AllowedPattern: '^[a-z0-9-]{3,24}$'
+    Description: Lowercase prefix for resource names.
+  McpToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >-
+      Optional bearer token for the MCP server. Leave blank for no auth (Quick service
+      auth "None"). If set, add header "Authorization: Bearer <token>" in Quick.
+  EnableZpaPath:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: Build a VPC, Quick website PrivateLink endpoint and a ZPA App Connector.
+  ZpaProvisioningKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: ZPA App Connector provisioning key (required if EnableZpaPath=true).
+  AppConnectorAmiId:
+    Type: String
+    Default: ''
+    Description: >-
+      Zscaler App Connector AMI ID for this region (subscribe in AWS Marketplace first).
+      Required if EnableZpaPath=true.
+  AppConnectorInstanceType:
+    Type: String
+    Default: m5a.large
+    AllowedValues: [t3.medium, m5a.large, m5.large, m6i.large]
+  KeyPairName:
+    Type: String
+    Default: ''
+    Description: Optional EC2 key pair for SSH to the App Connector.
+  VpcCidr:
+    Type: String
+    Default: 10.50.0.0/16
+    AllowedPattern: '^\d+\.\d+\.\d+\.\d+/16$'
+
+Conditions:
+  Zpa: !Equals [!Ref EnableZpaPath, 'true']
+  HasKey: !Not [!Equals [!Ref KeyPairName, '']]
+
+Rules:
+  ZpaInputs:
+    RuleCondition: !Equals [!Ref EnableZpaPath, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ZpaProvisioningKey, '']]
+        AssertDescription: ZpaProvisioningKey is required when EnableZpaPath=true.
+      - Assert: !Not [!Equals [!Ref AppConnectorAmiId, '']]
+        AssertDescription: AppConnectorAmiId is required when EnableZpaPath=true.
+
+Resources:
+  # ---------------- Synthetic data for Quick knowledge bases / DSPM ----------------
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-data-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ObjectOwnership: BucketOwnerEnforced}]
+      Tags:
+        - {Key: Purpose, Value: zscaler-quick-demo}
+        - {Key: DataClass, Value: synthetic-sensitive}
+
+  DataBucketTlsOnly:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt DataBucket.Arn, !Sub '${DataBucket.Arn}/*']
+            Condition: {Bool: {'aws:SecureTransport': 'false'}}
+
+  SeedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - {Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: 'sts:AssumeRole'}
+      ManagedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole']
+      Policies:
+        - PolicyName: seed-bucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['s3:PutObject', 's3:DeleteObject', 's3:DeleteObjectVersion', 's3:ListBucket', 's3:ListBucketVersions']
+                Resource: [!GetAtt DataBucket.Arn, !Sub '${DataBucket.Arn}/*']
+
+  SeedFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-seed'
+      Description: Writes synthetic sensitive data to the demo bucket; empties it on stack delete.
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 120
+      Role: !GetAtt SeedRole.Arn
+      Code:
+        ZipFile: |
+__SEED__
+
+  SeedData:
+    Type: Custom::SeedData
+    DependsOn: DataBucketTlsOnly
+    Properties:
+      ServiceToken: !GetAtt SeedFunction.Arn
+      Bucket: !Ref DataBucket
+      Version: '1'
+
+  # ---------------- Deliberately vulnerable MCP server ----------------
+  McpRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - {Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: 'sts:AssumeRole'}
+      ManagedPolicyArns: ['arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole']
+
+  McpFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-mcp'
+      Description: >-
+        Demo MCP server (streamable HTTP). INTENTIONALLY VULNERABLE - poisoned tool
+        description, injected tool output, over-shared PII. Synthetic data only.
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 15
+      MemorySize: 256
+      Role: !GetAtt McpRole.Arn
+      Environment:
+        Variables: {TOKEN: !Ref McpToken}
+      Code:
+        ZipFile: |
+__MCP__
+
+  McpLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${McpFunction}'
+      RetentionInDays: 14
+
+  McpUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt McpFunction.Arn
+      AuthType: NONE
+
+  McpUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref McpFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  McpInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref McpFunction
+      Action: lambda:InvokeFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+
+  # ---------------- Optional: Quick reachable only via ZPA ----------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Condition: Zpa
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-vpc'}]
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: Zpa
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 4, 8]]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-public'}]
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Condition: Zpa
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 4, 8]]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-private'}]
+
+  Igw:
+    Type: AWS::EC2::InternetGateway
+    Condition: Zpa
+
+  IgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Condition: Zpa
+    Properties: {VpcId: !Ref Vpc, InternetGatewayId: !Ref Igw}
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    Condition: Zpa
+    DependsOn: IgwAttach
+    Properties: {Domain: vpc}
+
+  NatGw:
+    Type: AWS::EC2::NatGateway
+    Condition: Zpa
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      AllocationId: !GetAtt NatEip.AllocationId
+
+  PublicRt:
+    Type: AWS::EC2::RouteTable
+    Condition: Zpa
+    Properties: {VpcId: !Ref Vpc}
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Condition: Zpa
+    DependsOn: IgwAttach
+    Properties: {RouteTableId: !Ref PublicRt, DestinationCidrBlock: 0.0.0.0/0, GatewayId: !Ref Igw}
+
+  PublicRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: Zpa
+    Properties: {SubnetId: !Ref PublicSubnet, RouteTableId: !Ref PublicRt}
+
+  PrivateRt:
+    Type: AWS::EC2::RouteTable
+    Condition: Zpa
+    Properties: {VpcId: !Ref Vpc}
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Condition: Zpa
+    Properties: {RouteTableId: !Ref PrivateRt, DestinationCidrBlock: 0.0.0.0/0, NatGatewayId: !Ref NatGw}
+
+  PrivateRtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: Zpa
+    Properties: {SubnetId: !Ref PrivateSubnet, RouteTableId: !Ref PrivateRt}
+
+  EndpointSg:
+    Type: AWS::EC2::SecurityGroup
+    Condition: Zpa
+    Properties:
+      GroupDescription: HTTPS from inside the VPC (App Connector) to the Quick endpoint
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref VpcCidr}
+
+  QuickWebsiteEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: Zpa
+    Properties:
+      VpcId: !Ref Vpc
+      VpcEndpointType: Interface
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.quicksight-website'
+      SubnetIds: [!Ref PrivateSubnet]
+      SecurityGroupIds: [!Ref EndpointSg]
+      PrivateDnsEnabled: false
+
+  QuickPrivateZone:
+    Type: AWS::Route53::HostedZone
+    Condition: Zpa
+    Properties:
+      Name: !Sub '${AWS::Region}.quicksight.aws.amazon.com'
+      VPCs: [{VPCId: !Ref Vpc, VPCRegion: !Ref 'AWS::Region'}]
+      HostedZoneConfig: {Comment: Resolves the Quick website to the PrivateLink endpoint inside the demo VPC}
+
+  QuickPrivateRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: Zpa
+    Properties:
+      HostedZoneId: !Ref QuickPrivateZone
+      Name: !Sub '${AWS::Region}.quicksight.aws.amazon.com'
+      Type: A
+      AliasTarget:
+        DNSName: !Select [1, !Split [':', !Select [0, !GetAtt QuickWebsiteEndpoint.DnsEntries]]]
+        HostedZoneId: !Select [0, !Split [':', !Select [0, !GetAtt QuickWebsiteEndpoint.DnsEntries]]]
+
+  ConnectorSg:
+    Type: AWS::EC2::SecurityGroup
+    Condition: Zpa
+    Properties:
+      GroupDescription: ZPA App Connector - outbound only
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+
+  AppConnector:
+    Type: AWS::EC2::Instance
+    Condition: Zpa
+    DependsOn: PrivateRoute
+    Properties:
+      ImageId: !Ref AppConnectorAmiId
+      InstanceType: !Ref AppConnectorInstanceType
+      SubnetId: !Ref PrivateSubnet
+      SecurityGroupIds: [!Ref ConnectorSg]
+      KeyName: !If [HasKey, !Ref KeyPairName, !Ref 'AWS::NoValue']
+      MetadataOptions: {HttpTokens: required}
+      Tags: [{Key: Name, Value: !Sub '${ProjectName}-zpa-app-connector'}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          systemctl stop zpa-connector 2>/dev/null || true
+          mkdir -p /opt/zscaler/var
+          cat > /opt/zscaler/var/provision_key <<'PROVKEY'
+          ${ZpaProvisioningKey}
+          PROVKEY
+          chmod 644 /opt/zscaler/var/provision_key
+          yum update -y || true
+          systemctl enable zpa-connector
+          systemctl start zpa-connector
+
+Outputs:
+  DataBucketName:
+    Description: Bucket with synthetic sensitive data. Point a Quick S3 knowledge base and Zscaler DSPM at it.
+    Value: !Ref DataBucket
+  KnowledgeBaseS3Uri:
+    Value: !Sub 's3://${DataBucket}/'
+  McpServerUrl:
+    Description: Paste into Quick > Integrations > MCP (service auth None, or custom header if McpToken set).
+    Value: !GetAtt McpUrl.FunctionUrl
+  McpLogGroup:
+    Description: Every MCP request Quick sends is logged here (useful to prove what the agent did).
+    Value: !Ref McpLogs
+  QuickVpcEndpointId:
+    Condition: Zpa
+    Description: Use this ID in Quick admin to restrict account access to this VPC endpoint (optional, locks out non-ZPA users).
+    Value: !Ref QuickWebsiteEndpoint
+  ZpaAppSegmentDomain:
+    Condition: Zpa
+    Description: Create a ZPA application segment for this domain (TCP 443) using the new connector group.
+    Value: !Sub '${AWS::Region}.quicksight.aws.amazon.com'
+  AppConnectorInstanceId:
+    Condition: Zpa
+    Value: !Ref AppConnector
