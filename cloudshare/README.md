@@ -28,4 +28,5 @@ powershell -ExecutionPolicy Bypass -File C:\SE-Demo\run.ps1 -Scenarios dlp,uploa
 
 - **Which user the traffic is logged under.** CloudShare runs commands through its VM agent, and the scheduled task runs as SYSTEM. In tunnel mode, Client Connector forwards the whole device's traffic and ZIA logs it under the enrolled user, but confirm it in Web Insights.
 - **Whether the API key can run commands.** Some CloudShare accounts restrict which API actions are allowed. If *Check VM* fails with a permission error, ask your CloudShare admin.
+- **The repo must be public.** The VM downloads the kit from GitHub without signing in, and GitHub answers "not found" for private repos.
 - **Downloads from GitHub and astral.sh.** If your demo tenant's policy blocks these, the first run fails. Allow them for the test user.

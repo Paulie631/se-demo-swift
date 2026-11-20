@@ -14,6 +14,7 @@
                                --via cloudshare: send it from your CloudShare VM instead of this laptop
   ./quick-kit template         write the AWS CloudFormation template (--out FILE, --project, --zpa, --ami ...)
   ./quick-kit mcp-test URL     check the demo MCP server from this laptop (--token T)
+  ./quick-kit update           update from GitHub (--check, --rollback); the console has an Update button too
   ./quick-kit install          copy the kit to ~/.quick-se-kit/app and add a desktop shortcut (uninstall removes it)
 
 Everything the kit creates in ZIA is named "... (Demo)". `setup --teardown --apply` removes all of it.
@@ -47,13 +48,15 @@ sys.path.insert(0, str(HERE))
 import cs_runner  # noqa: E402
 import quick_traffic  # noqa: E402
 import zia_quick_setup as zqs  # noqa: E402
+import updater  # noqa: E402
 import zpa_quick  # noqa: E402
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 HOME = pathlib.Path(os.environ.get("QUICK_KIT_HOME", pathlib.Path.home() / ".quick-se-kit"))
 CFG_FILE = HOME / "config.json"
 LOG_FILE = HOME / "kit.log"
 KEYRING_SERVICE = "quick-se-kit"
+BACKUP = HOME / "previous"   # the version before the last update, for rollback
 TEMPLATE = HERE / "aws" / "quick-demo-env.yaml"
 QUICK_REGIONS = ["us-east-1", "us-west-2", "eu-west-1", "ap-southeast-2"]
 SCENARIOS = ["visibility", "dlp", "upload"]
@@ -402,6 +405,57 @@ def mcp_test(url: str, token: str = "") -> dict:
     return {"ok": ok, "tools": tools, "steps": steps}
 
 
+
+# ----------------------------------------------------------------------------- updates
+def upd_src(cfg: dict) -> tuple[str, str]:
+    return cfg.get("update_repo") or updater.DEFAULT_REPO, cfg.get("update_ref") or updater.DEFAULT_REF
+
+
+def update_check(cfg: dict) -> dict:
+    repo, ref = upd_src(cfg)
+    r = updater.check(VERSION, HERE, repo, ref, verify=cfg.get("ca_bundle") or True, backup=BACKUP)
+    log(f"Update check: running {VERSION}, latest {r['latest']}" + (" (update available)" if r["available"] else ""),
+        "info")
+    return r
+
+
+def update_apply(cfg: dict) -> dict:
+    info = update_check(cfg)
+    if not info["available"]:
+        return {"updated": False, "version": VERSION, "message": f"You're on the latest version ({VERSION})."}
+    repo, ref = upd_src(cfg)
+    log(f"Updating {VERSION} -> {info['latest']} ({info['mode']})", "action")
+    v = updater.apply(HERE, BACKUP, info["latest"], repo, ref, verify=cfg.get("ca_bundle") or True,
+                      log=lambda m: log(m, "info"))
+    log(f"Updated to {v}", "ok")
+    return {"updated": True, "version": v}
+
+
+def restart_console(srv, port: int) -> None:
+    """Start the (updated) console again in the background on the same port, then exit this process."""
+    import subprocess
+    launcher = HERE / ("quick-kit.cmd" if WINDOWS else "quick-kit")
+    args = ["gui", "--port", str(port), "--no-browser"]
+    # The launcher runs under uv, so a new version's new dependencies get installed; plain Python is the fallback.
+    cmd = ([str(launcher), *args] if launcher.exists()
+           else [sys.executable, str(HERE / "quick_kit.py"), *args])
+    try:
+        srv.socket.close()  # free the port for the new console
+    except OSError:
+        pass
+    HOME.mkdir(parents=True, exist_ok=True)
+    with open(HOME / "console-output.log", "ab") as out:
+        if WINDOWS:
+            subprocess.Popen(["cmd", "/c", *cmd], cwd=str(HERE), stdin=subprocess.DEVNULL, stdout=out,
+                             stderr=subprocess.STDOUT,
+                             creationflags=0x08000000 | 0x00000200)  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        else:
+            subprocess.Popen(["nohup", "bash", *cmd] if cmd[0].endswith("quick-kit") else ["nohup", *cmd],
+                             cwd=str(HERE), stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+    os._exit(0)
+
+
 # ----------------------------------------------------------------------------- GUI
 def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -441,7 +495,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
         def _do(self, fn):
             try:
                 return self._send(200, fn())
-            except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, ValueError) as e:
+            except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, updater.UpdateError, ValueError) as e:
                 log(str(e), "error")
                 return self._send(400, {"error": str(e)})
             except Exception as e:  # unexpected: show it, keep the console alive
@@ -485,6 +539,8 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                 return self._do(lambda: {"groups": zpa_client(load_cfg()).connector_groups()})
             if path == "/api/zpa/status":
                 return self._do(lambda: {"items": zpa_quick.status(zpa_client(load_cfg()))})
+            if path == "/api/update/check":
+                return self._do(lambda: update_check(load_cfg()))
             if path == "/api/jobs":
                 j = JOBS.get(q.get("id", ""))
                 return self._send(200 if j else 404, j or {"error": "no such job"})
@@ -569,6 +625,21 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                                   extra={"Content-Disposition": 'attachment; filename="quick-demo-env.yaml"'})
             if path == "/api/aws/mcp-test":
                 return self._do(lambda: mcp_test(b.get("url", ""), b.get("token", "")))
+            if path == "/api/update":
+                act = b.get("action", "apply")
+                try:
+                    r = (update_apply(load_cfg()) if act == "apply"
+                         else {"updated": True, "version": updater.rollback(HERE, BACKUP, lambda m: log(m, "info"))})
+                except updater.UpdateError as e:
+                    log(str(e), "error")
+                    return self._send(400, {"error": str(e)})
+                if r.get("updated"):
+                    r["restarting"] = True
+                    self._send(200, r)
+                    log("Restarting the console with the new version", "action")
+                    threading.Timer(0.5, lambda: restart_console(srv, srv.server_address[1])).start()
+                    return
+                return self._send(200, r)
             if path == "/api/quit":
                 log("Console stopped from the browser", "action")
                 self._send(200, {"ok": True})
@@ -601,7 +672,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
 
 
 # ----------------------------------------------------------------------------- install / uninstall
-APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "zpa_quick.py", "quick_traffic.py", "cs_runner.py", "cloudshare/run.ps1", "gui.html", "quick-kit", "quick-kit.cmd",
+APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "zpa_quick.py", "updater.py", "CHANGELOG.md", "quick_traffic.py", "cs_runner.py", "cloudshare/run.ps1", "gui.html", "quick-kit", "quick-kit.cmd",
              "README.md", "aws/quick-demo-env.yaml", "aws/README.md"]
 WINDOWS = os.name == "nt"
 SHORTCUT = "Amazon Quick Demo Console"
@@ -694,6 +765,9 @@ def main(argv=None) -> None:
     tp.add_argument("--project", default="zs-quick-demo")
     tp.add_argument("--zpa", action="store_true")
     tp.add_argument("--ami", default="")
+    up = sub.add_parser("update", help="update the kit from GitHub (--check: only check, --rollback: previous version)")
+    up.add_argument("--check", action="store_true")
+    up.add_argument("--rollback", action="store_true")
     sub.add_parser("install")
     sub.add_parser("uninstall")
     m = sub.add_parser("mcp-test")
@@ -739,6 +813,17 @@ def main(argv=None) -> None:
         elif a.cmd == "template":
             pathlib.Path(a.out).write_text(build_template({"project": a.project, "zpa": a.zpa, "ami": a.ami}), encoding="utf-8")
             print(f"Wrote {a.out}. Upload it in the CloudFormation console (Create stack > Upload a template file).")
+        elif a.cmd == "update":
+            if a.rollback:
+                print("Rolled back to", updater.rollback(HERE, BACKUP))
+            else:
+                info = update_check(cfg)
+                print(f"Running {VERSION}; latest {info['latest']}.")
+                if info["notes"]:
+                    print("\n" + info["notes"] + "\n")
+                if info["available"] and not a.check:
+                    r = update_apply(cfg)
+                    print(f"Updated to {r['version']}. Restart the console to use it.")
         elif a.cmd == "install":
             cmd_install()
         elif a.cmd == "uninstall":
@@ -748,7 +833,7 @@ def main(argv=None) -> None:
             for st in r["steps"]:
                 print(f"  [{'✓' if st['ok'] else '✗'}] {st['step']:<32} {st.get('status')} {st.get('note', '')}")
             print("Tools:", ", ".join(r["tools"]) or "none")
-    except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, ValueError) as e:
+    except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, updater.UpdateError, ValueError) as e:
         if getattr(a, "json", False):
             print(cs_runner.MARK + json.dumps({"ok": False, "error": str(e)}))
         sys.exit(str(e))

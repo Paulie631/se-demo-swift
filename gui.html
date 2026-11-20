@@ -53,6 +53,10 @@ th{font-size:12px;color:var(--muted);font-weight:600}
 .banner{border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px}
 .banner.warn{background:var(--warn-bg);color:var(--warn)}.banner.ok{background:var(--ok-bg);color:var(--ok)}.banner.bad{background:var(--bad-bg);color:var(--bad)}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}.seg button{border:0;border-radius:0;padding:7px 14px}.seg button+button{border-left:1px solid var(--line)}.seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.upd{font-size:12px;padding:4px 11px;border-radius:99px}.upd.new{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:flex-start;justify-content:center;z-index:20;padding:60px 16px;overflow:auto}
+.modal.on{display:flex}.modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;max-width:620px;width:100%}
+.modal h3{margin:0 0 8px;font-size:16px}.notes-md{white-space:pre-wrap;font-size:13px;background:var(--soft);border-radius:8px;padding:10px 12px;max-height:45vh;overflow:auto;margin:10px 0}
 label.check{display:flex;gap:8px;align-items:flex-start;cursor:pointer}label.check input{margin-top:3px}
 .err{color:var(--bad);font-size:13px;margin-top:8px}
 .steps{counter-reset:s;list-style:none;padding:0;margin:0}
@@ -83,6 +87,7 @@ body.present .notes,body.present .presenter{display:none}
   <span class="sp"></span>
   <label class="row hint"><input type="checkbox" id="present"> Presenting (hide talk track)</label>
   <span class="meta" id="ver"></span>
+  <button class="upd" id="upd" title="Check GitHub for a newer version">Check for updates</button>
   <button id="quit" title="Stop the console">Quit</button>
 </header>
 <nav class="tabs" id="tabs">
@@ -277,6 +282,13 @@ body.present .notes,body.present .presenter{display:none}
   </div>
 </div></section>
 
+<div class="modal" id="updmodal"><div class="box">
+  <h3 id="updtitle">Update</h3>
+  <div id="updbody"></div>
+  <div class="row" style="margin-top:12px"><span class="sp" style="flex:1"></span>
+    <button id="updroll" style="display:none">Roll back</button><button id="updclose">Close</button><button class="primary" id="updgo" style="display:none">Update now</button></div>
+  <div class="err" id="upderr"></div>
+</div></div>
 <script>
 const TOKEN="__KIT_TOKEN__";
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
@@ -456,6 +468,38 @@ $("#mcptest").onclick=e=>busy(e.target,async()=>{
 });
 
 $("#quit").onclick=async()=>{if(!confirm("Stop the demo console?"))return;await api("/api/quit",{}).catch(()=>{});document.body.innerHTML='<div class="wrap"><div class="panel"><h2>Console stopped</h2><p>Open it again from the desktop shortcut or <code>./quick-kit gui</code>.</p></div></div>'};
+
+// ---------------- updates
+let UPD=null;
+async function checkUpdate(show){
+  try{UPD=await api("/api/update/check");const b=$("#upd");
+    if(UPD.available){b.textContent=`Update to v${UPD.latest}`;b.classList.add("new")}else{b.textContent="Up to date";b.classList.remove("new")}
+    if(show)openUpd()}
+  catch(err){if(show){UPD=null;openUpd(err.message)}}
+}
+function openUpd(err){
+  const m=$("#updmodal");m.classList.add("on");$("#upderr").textContent=err||"";
+  const u=UPD;$("#updgo").style.display=u&&u.available?"":"none";
+  $("#updroll").style.display=u&&u.rollback&&u.mode==="copy"?"":"none";if(u&&u.rollback)$("#updroll").textContent=`Roll back to v${u.rollback}`;
+  $("#updtitle").textContent=!u?"Couldn't check for updates":u.available?`Version ${u.latest} is available`:"You're up to date";
+  $("#updbody").innerHTML=!u?"":`<p class="hint">Running v${esc(u.current)} · latest on GitHub (${esc(u.repo)} @ ${esc(u.ref)}): v${esc(u.latest)}.
+    ${u.mode==="git"?"This copy is a git checkout, so the update runs <code>git pull</code>.":"The current version is backed up first, so you can roll back."}</p>
+    ${u.available&&u.notes?`<div class="notes-md">${esc(u.notes)}</div>`:""}
+    ${u.available?'<p class="hint">The console restarts after the update and this page reloads by itself. Your settings and keychain secrets stay as they are.</p>':""}`;
+}
+$("#upd").onclick=()=>UPD&&UPD.available?openUpd():checkUpdate(true);
+$("#updclose").onclick=()=>$("#updmodal").classList.remove("on");
+async function waitRestart(){
+  $("#updbody").innerHTML='<p>Restarting the console…</p>';
+  for(let i=0;i<60;i++){await sleep(1000);try{const r=await fetch("/",{cache:"no-store"});if(r.ok){location.reload();return}}catch(e){}}
+  $("#updbody").innerHTML='<p>The console didn\'t come back on this address. Open it again from the desktop shortcut or with <code>./quick-kit gui</code>.</p>';
+}
+const updDo=action=>e=>busy(e.target,async()=>{$("#upderr").textContent="";
+  try{const r=await api("/api/update",{action});if(r.restarting){$("#updgo").style.display="none";$("#updroll").style.display="none";await waitRestart()}
+    else{$("#updbody").innerHTML=`<p>${esc(r.message||"Nothing to do.")}</p>`;$("#updgo").style.display="none"}}
+  catch(err){$("#upderr").textContent=err.message}});
+$("#updgo").onclick=updDo("apply");$("#updroll").onclick=e=>{if(confirm(`Roll back to v${UPD.rollback}?`))updDo("rollback")(e)};
+setTimeout(()=>checkUpdate(false),1500);
 
 // ---------------- logs
 async function loadLogs(){const r=await api("/api/logs");$("#loglist").innerHTML=r.logs.slice().reverse().map(l=>`<div class="logline ${esc(l.kind)}"><span class="k">${esc(l.t)}</span><span class="k">${esc(l.kind)}</span>${esc(l.msg)}</div>`).join("")||'<p class="hint">Nothing yet.</p>'}

@@ -351,5 +351,69 @@ class RetryTests(unittest.TestCase):
             _t.sleep = sleep
 
 
+class UpdaterTests(unittest.TestCase):
+    def _zip(self, version):
+        import io, zipfile
+        b = io.BytesIO()
+        with zipfile.ZipFile(b, "w") as z:
+            z.writestr("se-demo-swift-main/quick_kit.py", f'VERSION = "{version}"\nprint("new")\n')
+            z.writestr("se-demo-swift-main/gui.html", "<html>new</html>")
+            z.writestr("se-demo-swift-main/quick-kit", "#!/bin/bash\n")
+        return b.getvalue()
+
+    def _fake_get(self, version, changelog):
+        zipped = self._zip(version)
+
+        def get(url, timeout=None, verify=None):
+            if url.endswith("/quick_kit.py"):
+                body = f'VERSION = "{version}"\n'.encode()
+            elif url.endswith("/CHANGELOG.md"):
+                body = changelog.encode()
+            else:
+                body = zipped
+            return types.SimpleNamespace(status_code=200, content=body, text=body.decode("latin-1"))
+        return get
+
+    def test_check_apply_rollback_copy_mode(self):
+        import updater
+        here = pathlib.Path(tempfile.mkdtemp()); backup = pathlib.Path(tempfile.mkdtemp()) / "previous"
+        (here / "quick_kit.py").write_text('VERSION = "0.2.1"\n'); (here / "gui.html").write_text("old")
+        cl = "# Changelog\n\n## 0.3.0\n- Update button\n\n## 0.2.1\n- retries\n"
+        orig = updater.requests.get
+        updater.requests.get = self._fake_get("0.3.0", cl)
+        try:
+            info = updater.check("0.2.1", here, backup=backup)
+            self.assertTrue(info["available"])
+            self.assertEqual(info["mode"], "copy")
+            self.assertIn("Update button", info["notes"])
+            self.assertNotIn("retries", info["notes"])
+            self.assertEqual(updater.apply(here, backup, "0.3.0", log=lambda m: None), "0.3.0")
+            self.assertEqual((here / "gui.html").read_text(), "<html>new</html>")
+            self.assertTrue(os.access(here / "quick-kit", os.X_OK) or os.name == "nt")
+            self.assertEqual(updater.check("0.3.0", here, backup=backup)["rollback"], "0.2.1")
+            self.assertEqual(updater.rollback(here, backup, log=lambda m: None), "0.2.1")
+            self.assertEqual((here / "gui.html").read_text(), "old")
+            with self.assertRaises(updater.UpdateError):          # version mismatch is refused
+                updater.apply(here, backup, "9.9.9", log=lambda m: None)
+        finally:
+            updater.requests.get = orig
+
+    def test_versions_and_git_dirty_refusal(self):
+        import subprocess, updater
+        self.assertGreater(updater.parse("0.10.0"), updater.parse("0.9.9"))
+        self.assertFalse(updater.parse("0.3.0") > updater.parse("0.3.0"))
+        repo = pathlib.Path(tempfile.mkdtemp())
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "quick_kit.py").write_text('VERSION = "0.1.0"\n')
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"], check=True)
+        (repo / "quick_kit.py").write_text('VERSION = "0.1.0"\n# local edit\n')
+        with self.assertRaises(updater.UpdateError) as e:
+            updater.apply(repo, repo / "bk", "0.2.0", log=lambda m: None)
+        self.assertIn("local changes", str(e.exception))
+        with self.assertRaises(updater.UpdateError):
+            updater.rollback(repo, repo / "bk")
+
+
 if __name__ == "__main__":
     unittest.main()
