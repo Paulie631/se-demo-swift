@@ -128,5 +128,71 @@ class TemplateTests(unittest.TestCase):
             self.assertLessEqual(len((ROOT / "aws" / "src" / f).read_text()), 4096)
 
 
+class CloudShareTests(unittest.TestCase):
+    def test_auth_header_matches_sdk_formula(self):
+        import cs_runner, hashlib
+        url = "https://use.cloudshare.com/api/v3/envs"
+        h = cs_runner.auth_header("APIID", "SECRETKEY", url, ts=1424606753, token="5686464440")
+        mac = hashlib.sha1(b"SECRETKEY" + url.encode() + b"1424606753" + b"5686464440").hexdigest()
+        self.assertEqual(h, f"cs_sha1 userapiid:APIID;timestamp:1424606753;token:5686464440;hmac:{mac}")
+
+    def test_run_command_decodes_to_expected_script(self):
+        import base64, cs_runner
+        cmd = cs_runner.run_command(["dlp", "upload"], 2, "us-east-1", "Paulie631/se-demo-swift", "main")
+        self.assertTrue(cmd.startswith("powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand "))
+        self.assertLess(len(cmd), 2000)
+        script = base64.b64decode(cmd.split()[-1]).decode("utf-16-le")
+        self.assertIn("https://raw.githubusercontent.com/Paulie631/se-demo-swift/main/cloudshare/run.ps1", script)
+        self.assertIn("-Scenarios 'dlp,upload' -Loops 2", script)
+        self.assertIn("-Region 'us-east-1'", script)
+        sched = base64.b64decode(cs_runner.run_command(["dlp"], schedule_every=30).split()[-1]).decode("utf-16-le")
+        self.assertIn("-Schedule -Every 30", sched)
+
+    def test_cs_action_end_to_end_with_fake_api(self):
+        import cs_runner
+        calls = []
+        payload = {"ok": True, "results": [{"outcome": "blocked", "label": "PII prompt", "scenario": "dlp"},
+                                           {"outcome": "blocked", "label": "PCI prompt", "scenario": "dlp"}]}
+
+        class Resp:
+            def __init__(self, obj, code=200):
+                self.status_code, self._o, self.text = code, obj, json.dumps(obj)
+            def json(self):
+                return self._o
+
+        def fake_request(method, url, headers=None, data=None, timeout=None, verify=None):
+            calls.append((method, url, headers["Authorization"]))
+            if "executePath" in url:
+                return Resp({"executionId": "EX1"})
+            if "checkExecutionStatus" in url:
+                n = sum(1 for c in calls if "checkExecutionStatus" in c[1])
+                if n < 2:
+                    return Resp({"success": False, "standardOutput": "Installing uv..."})
+                return Resp({"success": True, "standardOutput": "noise\nQK_RESULT " + json.dumps(payload)})
+            return Resp({}, 404)
+
+        orig_req, orig_sleep, orig_get = cs_runner.requests.request, cs_runner.time.sleep, qk.get_secret
+        cs_runner.requests.request, cs_runner.time.sleep = fake_request, lambda s: None
+        qk.get_secret = lambda name="": "KEY"
+        try:
+            cfg = {"cloudshare": {"api_id": "ID", "vm_id": "VM1", "vm_name": "Corp Client PC"}}
+            r = qk.cs_action(cfg, "traffic", ["dlp"], 1)
+        finally:
+            cs_runner.requests.request, cs_runner.time.sleep, qk.get_secret = orig_req, orig_sleep, orig_get
+        self.assertEqual(r["summary"], {"blocked": 2})
+        self.assertEqual(r["vm"], "Corp Client PC")
+        self.assertTrue(all(c[2].startswith("cs_sha1 userapiid:ID;") for c in calls))
+        self.assertIn("vmId=VM1", calls[-1][1])
+
+    def test_vm_error_and_missing_result_are_reported(self):
+        import cs_runner
+        with self.assertRaises(cs_runner.CloudShareError) as e:
+            cs_runner.parse_result({"standardOutput": "something broke", "standardError": "boom"})
+        self.assertIn("boom", str(e.exception))
+        self.assertEqual(cs_runner.parse_result({"standardOutput": 'QK_RESULT {"ok": false, "error": "x"}'})["ok"], False)
+        with self.assertRaises(cs_runner.CloudShareError):
+            qk.cs_vm({})
+
+
 if __name__ == "__main__":
     unittest.main()

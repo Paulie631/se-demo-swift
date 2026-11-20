@@ -52,6 +52,7 @@ th{font-size:12px;color:var(--muted);font-weight:600}
 .v-blocked{color:var(--bad);font-weight:600}.v-passed{color:var(--muted)}.v-tls_error,.v-error{color:var(--warn);font-weight:600}
 .banner{border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:13px}
 .banner.warn{background:var(--warn-bg);color:var(--warn)}.banner.ok{background:var(--ok-bg);color:var(--ok)}.banner.bad{background:var(--bad-bg);color:var(--bad)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}.seg button{border:0;border-radius:0;padding:7px 14px}.seg button+button{border-left:1px solid var(--line)}.seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:600}
 label.check{display:flex;gap:8px;align-items:flex-start;cursor:pointer}label.check input{margin-top:3px}
 .err{color:var(--bad);font-size:13px;margin-top:8px}
 .steps{counter-reset:s;list-style:none;padding:0;margin:0}
@@ -147,8 +148,41 @@ body.present .notes,body.present .presenter{display:none}
 <!-- ============================== TRAFFIC ============================== -->
 <section class="view" id="v-traffic"><div class="wrap stack">
   <div class="panel">
+    <h2>Send from</h2>
+    <div class="row">
+      <div class="seg" id="srcseg"><button data-src="laptop" class="on">This laptop</button><button data-src="cloudshare">CloudShare VM</button></div>
+      <span class="hint" id="srchint"></span>
+    </div>
+    <div class="banner warn" id="laptopwarn" style="margin:12px 0 0">Traffic goes to the Zscaler tenant <b>this laptop's</b> Client Connector is enrolled in. On a corporate laptop, that's the corporate tenant: the fake PII would raise real DLP incidents there and never reach your demo tenant. Use a CloudShare VM enrolled in your demo tenant instead.</div>
+    <div id="cspanel" style="display:none;margin-top:14px">
+      <div class="grid">
+        <div>
+          <div class="field"><span class="lbl">CloudShare API ID (CloudShare › My Account › API Credentials)</span><input type="text" id="csid" autocomplete="off"></div>
+          <div class="field"><span class="lbl">API key <span id="cskeystate" class="pill">not saved</span></span><input type="password" id="cskey" placeholder="Leave blank to keep the saved key" autocomplete="new-password"></div>
+          <div class="row"><button id="cssave">Save &amp; load environments</button></div>
+          <details style="margin-top:10px"><summary class="hint">Advanced: kit source the VM downloads</summary>
+            <div class="row" style="margin-top:8px"><div class="field" style="flex:2"><span class="lbl">GitHub repo</span><input type="text" id="csrepo"></div><div class="field" style="flex:1"><span class="lbl">Branch or tag</span><input type="text" id="csref"></div></div>
+          </details>
+        </div>
+        <div>
+          <div class="field"><span class="lbl">Environment</span><select id="csenv"><option value="">Save your API credentials first</option></select></div>
+          <div class="field"><span class="lbl">Windows VM (Client Connector enrolled as your demo-tenant user)</span><select id="csvm"></select></div>
+          <div class="row">
+            <button id="cscheck">Check VM</button>
+            <button id="cssched">Keep dashboards fresh</button>
+            <select id="csevery" style="width:auto"><option value="30">every 30 min</option><option value="60" selected>every 60 min</option><option value="120">every 2 h</option></select>
+            <button id="csunsched">Stop schedule</button>
+          </div>
+        </div>
+      </div>
+      <div id="csout"></div>
+      <div class="err" id="cserr"></div>
+      <p class="hint" style="margin-top:10px">The console asks CloudShare to run a short PowerShell command on the VM. The first run installs uv, Python 3.12 and the kit under <code>C:\SE-Demo</code> (about 2 minutes); later runs take seconds. Nothing with fake PII is sent from this laptop.</p>
+    </div>
+  </div>
+  <div class="panel">
     <h2>Generate Amazon Quick traffic</h2>
-    <p>Sends Quick-shaped requests from this laptop through Client Connector. All data is synthetic. Requests carry no AWS credentials, so AWS answers with an error code, but ZIA inspects, logs or blocks each one first. Run a few passes 30–60 minutes before a demo so the dashboards have data.</p>
+    <p>Sends Quick-shaped requests from <b id="srcname">this laptop</b> through Client Connector. All data is synthetic. Requests carry no AWS credentials, so AWS answers with an error code, but ZIA inspects, logs or blocks each one first. Run a few passes 30–60 minutes before a demo so the dashboards have data.</p>
     <div class="row">
       <label><input type="checkbox" class="sc" value="visibility" checked> Visibility (browsing + benign prompts)</label>
       <label><input type="checkbox" class="sc" value="dlp" checked> DLP on prompts</label>
@@ -242,10 +276,14 @@ async function loadCfg(){
   $("#tenant").textContent=CFG.vanity?`Tenant: ${CFG.vanity}.zslogin.net`:"Not connected";
   $("#urls").textContent=(CFG.category_urls||[]).join("\n");
   const opts=(CFG.regions||[]).map(r=>`<option>${r}</option>`).join("");
-  $("#region").insertAdjacentHTML("beforeend",opts);$("#awsregion").innerHTML=opts;
+  $("#region").innerHTML=`<option value="">Random</option>`+opts;$("#awsregion").innerHTML=opts;
   const a=CFG.aws||{};if(a.project)$("#proj").value=a.project;if(a.region)$("#awsregion").value=a.region;
   if(a.zpa){$("#zpa").checked=true;$("#zpaopts").style.display=""}if(a.ami)$("#ami").value=a.ami;if(a.keypair)$("#keypair").value=a.keypair;if(a.instance_type)$("#itype").value=a.instance_type;
   cfnLink();
+  const cs=CFG.cloudshare||{};$("#csid").value=cs.api_id||"";$("#csrepo").value=cs.repo||"";$("#csref").value=cs.ref||"";
+  $("#cskeystate").textContent=CFG.cs_has_key?"saved in keychain":"not saved";$("#cskeystate").className="pill "+(CFG.cs_has_key?"ok":"");
+  setSrc(CFG.traffic_source||"laptop");
+  if(cs.api_id&&CFG.cs_has_key&&!loadCfg.csLoaded){loadCfg.csLoaded=true;csLoadEnvs(true).catch(err=>$("#cserr").textContent=err.message)}
 }
 $("#save").onclick=e=>busy(e.target,async()=>{
   $("#connerr").textContent="";$("#conn").innerHTML="";
@@ -272,19 +310,65 @@ const ziaRun=(apply,teardown)=>async e=>{
 $("#preview").onclick=ziaRun(false,false);$("#apply").onclick=ziaRun(true,false);$("#teardown").onclick=ziaRun(true,true);
 
 // ---------------- traffic
+let SRC="laptop";
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function csJob(body,onTick){
+  const {job}=await api("/api/cloudshare/run",body);
+  for(;;){await sleep(3000);const j=await api("/api/jobs?id="+job);
+    if(j.state==="done")return j.result;if(j.state==="error")throw new Error(j.error);onTick&&onTick(j.elapsed||0)}
+}
 async function sendTraffic(scenarios,loops,btn){
-  $("#trferr").textContent="";$("#runstate").textContent="Sending… this takes up to a minute per pass.";
+  $("#trferr").textContent="";
+  $("#runstate").textContent=SRC==="cloudshare"?"Asking the CloudShare VM to send traffic…":"Sending… this takes up to a minute per pass.";
   try{
-    const r=await api("/api/traffic",{scenarios,loops,region:$("#region").value});
+    const r=SRC==="cloudshare"
+      ?await csJob({action:"traffic",scenarios,loops,region:$("#region").value},s=>$("#runstate").textContent=`Waiting for the VM… ${s}s${s>40?" (the first run installs Python on the VM, about 2 minutes)":""}`)
+      :await api("/api/traffic",{scenarios,loops,region:$("#region").value});
     $("#trfres").style.display="";
     const s=r.summary||{};
     $("#trfsum").innerHTML=Object.entries(s).map(([k,v])=>`<span class="pill ${k==="blocked"?"bad":k==="passed"?"":"warn"}">${esc(k.replace("_"," "))}: ${v}</span>`).join("")||'<span class="pill">no requests</span>';
     $("#trfrows").innerHTML=r.results.map(x=>`<tr><td class="v-${x.outcome}">${esc(x.outcome.replace("_"," "))}</td><td>${esc(x.scenario)}</td><td>${esc(x.label)}${x.fix?`<div class="hint">${esc(x.fix)}</div>`:""}</td><td>${x.status??"—"}</td></tr>`).join("");
-    $("#runstate").textContent="Done. Check ZIA Web Insights and DLP incidents in a few minutes.";
+    $("#runstate").textContent=(SRC==="cloudshare"?`Sent from ${r.vm||"the CloudShare VM"}. `:"")+"Check ZIA Web Insights and DLP incidents in a few minutes.";
     return r;
   }catch(err){$("#trferr").textContent=err.message;$("#runstate").textContent=""}
 }
 $("#run").onclick=e=>busy(e.target,()=>sendTraffic($$(".sc:checked").map(x=>x.value),+$("#loops").value));
+
+// ---------------- CloudShare
+function setSrc(s,save){SRC=s;$$("#srcseg button").forEach(b=>b.classList.toggle("on",b.dataset.src===s));
+  $("#cspanel").style.display=s==="cloudshare"?"":"none";$("#laptopwarn").style.display=s==="laptop"?"":"none";
+  const vm=$("#csvm").selectedOptions[0];$("#srcname").textContent=s==="cloudshare"?"the CloudShare VM":"this laptop";$("#srchint").textContent=s==="cloudshare"?(vm&&vm.value?`Traffic will come from ${vm.textContent}`:"Pick a VM below"):"";
+  if(save)api("/api/config",{traffic_source:s}).catch(()=>{})}
+$$("#srcseg button").forEach(b=>b.onclick=()=>setSrc(b.dataset.src,true));
+function csSel(){const e=$("#csenv").selectedOptions[0],v=$("#csvm").selectedOptions[0];
+  return{env_id:$("#csenv").value,env_name:e?e.textContent:"",vm_id:$("#csvm").value,vm_name:v?v.textContent.replace(/ ·.*$/,""):"",repo:$("#csrepo").value,ref:$("#csref").value}}
+async function csLoadEnvs(keep){
+  $("#cserr").textContent="";const {envs}=await api("/api/cloudshare/envs");
+  $("#csenv").innerHTML='<option value="">Choose an environment</option>'+envs.map(e=>`<option value="${esc(e.id)}">${esc(e.name)}${e.status?" · "+esc(e.status):""}</option>`).join("");
+  if(keep&&CFG.cloudshare.env_id){$("#csenv").value=CFG.cloudshare.env_id;await csLoadVms(true)}
+}
+async function csLoadVms(keep){
+  $("#csvm").innerHTML="<option>Loading…</option>";const {vms}=await api("/api/cloudshare/vms?env="+encodeURIComponent($("#csenv").value));
+  const w=vms.filter(v=>v.windows),list=w.length?w:vms;
+  $("#csvm").innerHTML=list.length?list.map(v=>`<option value="${esc(v.id)}">${esc(v.name)}${v.status?" · "+esc(v.status):""}</option>`).join(""):'<option value="">No VMs in this environment</option>';
+  if(keep&&CFG.cloudshare.vm_id)$("#csvm").value=CFG.cloudshare.vm_id;
+  await api("/api/config",{cloudshare:csSel()});setSrc(SRC);
+}
+$("#cssave").onclick=e=>busy(e.target,async()=>{try{
+  await api("/api/config",{cloudshare:{api_id:$("#csid").value,repo:$("#csrepo").value,ref:$("#csref").value},cs_key:$("#cskey").value});
+  $("#cskey").value="";await loadCfg();await csLoadEnvs(true)}catch(err){$("#cserr").textContent=err.message}});
+$("#csenv").onchange=()=>csLoadVms(false).catch(err=>$("#cserr").textContent=err.message);
+$("#csvm").onchange=()=>{api("/api/config",{cloudshare:csSel()}).catch(()=>{});setSrc(SRC)};
+function csShow(r){
+  const rows=Object.entries(r).filter(([k])=>!["ok","vm"].includes(k)).map(([k,v])=>{
+    const good=(k==="via_zscaler"||k==="kit_installed")?(v?"ok":"bad"):(k==="zcc_service"?(v==="Running"?"ok":"bad"):"");
+    return`<tr><td>${esc(k.replace(/_/g," "))}</td><td>${good?`<span class="pill ${good}">${esc(String(v))}</span>`:esc(typeof v==="object"?JSON.stringify(v):String(v))}</td></tr>`}).join("");
+  $("#csout").innerHTML=`<table style="margin-top:12px"><tbody>${rows}</tbody></table>`+(r.via_zscaler===false?'<p class="err">This VM isn\'t going through Zscaler. Sign in to Client Connector on the VM as your demo-tenant user.</p>':"");
+}
+const csDo=(action,label)=>e=>busy(e.target,async()=>{$("#cserr").textContent="";$("#csout").innerHTML=`<p class="hint" id="cstick">${label}…</p>`;
+  try{csShow(await csJob({action,every:+$("#csevery").value,scenarios:["visibility","dlp","upload"]},s=>{const t=$("#cstick");if(t)t.textContent=`${label}… ${s}s`}))}
+  catch(err){$("#csout").innerHTML="";$("#cserr").textContent=err.message}});
+$("#cscheck").onclick=csDo("check","Checking the VM");$("#cssched").onclick=csDo("schedule","Scheduling");$("#csunsched").onclick=csDo("unschedule","Removing the schedule");
 
 // ---------------- AWS
 $("#zpa").onchange=e=>$("#zpaopts").style.display=e.target.checked?"":"none";
@@ -371,7 +455,7 @@ function renderAct(){
   $$("[data-copy]").forEach(b=>b.onclick=()=>{navigator.clipboard.writeText(P[b.dataset.copy]);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1200)});
   $("#prev").onclick=()=>{cur--;renderActs();renderAct()};$("#next").onclick=()=>{cur++;renderActs();renderAct()};
   if(a.run)$("#actrun").onclick=e=>busy(e.target,async()=>{$("#actout").textContent="Sending…";const r=await sendTraffic(a.run.sc,1);
-    $("#actout").innerHTML=r?`Sent ${r.results.length} requests: ${Object.entries(r.summary).map(([k,v])=>`${v} ${esc(k.replace("_"," "))}`).join(", ")}. Details are on the Traffic tab.`:`<span class="err">${esc($("#trferr").textContent)}</span>`});
+    $("#actout").innerHTML=r?`${SRC==="cloudshare"?"From the CloudShare VM: s":"S"}ent ${(r.results||[]).length} requests: ${Object.entries(r.summary).map(([k,v])=>`${v} ${esc(k.replace("_"," "))}`).join(", ")}. Details are on the Traffic tab.`:`<span class="err">${esc($("#trferr").textContent)}</span>`});
   if(a.mcp)$("#actmcp").onclick=()=>$('#tabs button[data-v="aws"]').click();
 }
 document.addEventListener("keydown",e=>{if(!$("#v-demo").classList.contains("on")||/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))return;

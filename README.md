@@ -17,7 +17,7 @@ Demo Zscaler securing **Amazon Quick** (AWS's agentic AI workspace) from a brows
 Then, in the console:
 1. **Setup:** enter your OneAPI vanity domain, client ID and secret (the API client needs the ZIA policy-admin role). Press **Save & test**, then **Preview changes**, then **Create & activate**.
 2. Do the one-time manual steps listed on the Setup tab. The important one: **SSL inspection** for the `Amazon Quick (Demo)` category.
-3. **Traffic:** send a few passes 30–60 minutes before the call so Web Insights and DLP incidents have data.
+3. **Traffic:** send a few passes 30–60 minutes before the call so Web Insights and DLP incidents have data. **On a corporate laptop, choose "Send from: CloudShare VM"** (see below).
 4. **Guided demo:** present the six acts. Each has a talk track, what to show, copyable prompts and a button for that step's traffic. Tick **Presenting** to hide your notes when you share your screen.
 
 ## The console
@@ -26,7 +26,7 @@ Then, in the console:
 |---|---|
 | **Setup** | Connect to ZIA (the secret is stored in the OS keychain). Check, preview, create or remove the demo policy: a custom URL category for Quick's domains, a **Caution** (usage-policy coaching) rule and a **Block** Web DLP rule (PCI / PII / GLBA). |
 | **Guided demo** | 1 Discover · 2 Govern access · 3 Protect data in prompts · 4 Agentic Quick (extension, desktop app, MCP) · 5 The data Quick can see (DSPM) · 6 Build-time assurance (AI-SPM, red teaming, prompt hardening). About 35 minutes. ← → to move. |
-| **Traffic** | Quick-shaped requests through Client Connector: visibility, PII/PCI/secrets prompts and a fake customer CSV upload, with a result per request (blocked, passed, or a TLS problem with its fix). Works without a Quick account. |
+| **Traffic** | Quick-shaped requests through Client Connector: visibility, PII/PCI/secrets prompts and a fake customer CSV upload, with a result per request (blocked, passed, or a TLS problem with its fix). Works without a Quick account. **Send from** this laptop or a **CloudShare VM**, with a VM check and an optional schedule to keep dashboards fresh. |
 | **AWS environment** | Builds the CloudFormation template with your choices filled in. Secrets stay out of the file. Links to the CloudFormation console, lists the steps to wire the stack into Quick, and runs a live check of the deployed MCP server. |
 | **Logs** | Everything the kit did (secrets never logged). Full file: `~/.quick-se-kit/kit.log`. |
 
@@ -36,12 +36,16 @@ Then, in the console:
 ./quick-kit config            save vanity domain, client ID, secret (keychain)
 ./quick-kit setup             preview the ZIA demo policy; --apply to create, --teardown --apply to remove
 ./quick-kit status            which demo objects exist
-./quick-kit traffic           demo traffic (--loops N, --only visibility|dlp|upload, --region)
+./quick-kit traffic           demo traffic (--loops N, --only visibility|dlp|upload, --region, --via cloudshare)
 ./quick-kit template          write the AWS template (--project, --zpa, --ami, --out)
 ./quick-kit mcp-test URL      check the deployed MCP server (--token)
 ./quick-kit install|uninstall desktop shortcut + ~/.quick-se-kit/app
 ```
 `zia_quick_setup.py` and `quick_traffic.py` still run on their own (environment variables `ZS_VANITY`, `ZS_CLIENT_ID`, `ZS_CLIENT_SECRET`).
+
+## Corporate laptop? Send traffic from CloudShare
+
+Traffic goes to whichever tenant the sending machine's Client Connector is enrolled in. From a corporate laptop, the fake PII would land in corporate DLP, not your demo tenant. Run the console on your laptop and send traffic from a CloudShare Windows VM enrolled in your demo tenant: the console drives it through the CloudShare API. Setup and details: [cloudshare/README.md](cloudshare/README.md).
 
 ## AWS environment
 

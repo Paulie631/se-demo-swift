@@ -9,6 +9,7 @@
   ./quick-kit setup            preview the ZIA demo policy (dry run); --apply to create + activate; --teardown
   ./quick-kit status           check credentials and which demo objects exist in ZIA
   ./quick-kit traffic          send Quick-shaped demo traffic through Client Connector (--loops N, --only dlp|...)
+                               --via cloudshare: send it from your CloudShare VM instead of this laptop
   ./quick-kit template         write the AWS CloudFormation template (--out FILE, --project, --zpa, --ami ...)
   ./quick-kit mcp-test URL     check the demo MCP server from this laptop (--token T)
   ./quick-kit install          copy the kit to ~/.quick-se-kit/app and add a desktop shortcut (uninstall removes it)
@@ -29,6 +30,7 @@ import secrets
 import sys
 import threading
 import time
+import urllib.parse
 
 try:
     import truststore  # trust the OS store, where Client Connector installs the Zscaler root CA
@@ -40,6 +42,7 @@ import requests
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import cs_runner  # noqa: E402
 import quick_traffic  # noqa: E402
 import zia_quick_setup as zqs  # noqa: E402
 
@@ -81,19 +84,20 @@ def save_cfg(cfg: dict) -> None:
     CFG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
-def get_secret() -> str:
-    if os.environ.get("ZS_CLIENT_SECRET"):
-        return os.environ["ZS_CLIENT_SECRET"]
+def get_secret(name: str = "zia_client_secret") -> str:
+    env = {"zia_client_secret": "ZS_CLIENT_SECRET", "cloudshare_api_key": "CLOUDSHARE_API_KEY"}.get(name)
+    if env and os.environ.get(env):
+        return os.environ[env]
     try:
         import keyring
-        return keyring.get_password(KEYRING_SERVICE, "zia_client_secret") or ""
+        return keyring.get_password(KEYRING_SERVICE, name) or ""
     except Exception:  # no keychain backend (headless Linux)
         return ""
 
 
-def set_secret(value: str) -> None:
+def set_secret(value: str, name: str = "zia_client_secret") -> None:
     import keyring
-    keyring.set_password(KEYRING_SERVICE, "zia_client_secret", value)
+    keyring.set_password(KEYRING_SERVICE, name, value)
 
 
 def creds(cfg: dict) -> tuple[str, str, str]:
@@ -165,6 +169,83 @@ def traffic(cfg: dict, scenarios: list[str], loops: int = 1, region: str | None 
             time.sleep(5)
     summary = collections.Counter(r["outcome"] for r in results)
     return {"results": results, "summary": dict(summary)}
+
+
+
+# ----------------------------------------------------------------------------- CloudShare VM as the traffic source
+def cs_cfg(cfg: dict) -> dict:
+    c = dict(cfg.get("cloudshare") or {})
+    c.setdefault("repo", cs_runner.DEFAULT_REPO)
+    c.setdefault("ref", cs_runner.DEFAULT_REF)
+    c["api_id"] = os.environ.get("CLOUDSHARE_API_ID") or c.get("api_id", "")
+    return c
+
+
+def cs_client(cfg: dict) -> cs_runner.CloudShare:
+    c = cs_cfg(cfg)
+    return cs_runner.CloudShare(c["api_id"], get_secret("cloudshare_api_key"), verify=cfg.get("ca_bundle") or True)
+
+
+def cs_vm(cfg: dict) -> tuple[str, str]:
+    c = cs_cfg(cfg)
+    if not c.get("vm_id"):
+        raise cs_runner.CloudShareError("Pick the CloudShare environment and Windows VM first (Traffic tab › CloudShare).")
+    return c["vm_id"], c.get("vm_name") or c["vm_id"]
+
+
+def cs_action(cfg: dict, action: str, scenarios=None, loops: int = 1, region: str = "", every: int = 60,
+              progress=None) -> dict:
+    """Run one action on the configured CloudShare VM: check | traffic | schedule | unschedule."""
+    c = cs_cfg(cfg)
+    vm_id, vm_name = cs_vm(cfg)
+    cs = cs_client(cfg)
+    scenarios = [s for s in (scenarios or SCENARIOS) if s in SCENARIOS]
+    if action == "check":
+        cmd = cs_runner.check_command()
+    elif action in ("traffic", "schedule", "unschedule"):
+        cmd = cs_runner.run_command(scenarios, loops, region, c["repo"], c["ref"],
+                                    schedule_every=every if action == "schedule" else 0,
+                                    unschedule=action == "unschedule")
+    else:
+        raise ValueError(f"Unknown CloudShare action {action}")
+    log(f"CloudShare: {action} on VM {vm_name}" + (f" ({', '.join(scenarios)} × {loops})" if action == "traffic" else ""),
+        "action")
+    st = cs.run(vm_id, cmd, timeout=900, progress=progress)
+    res = cs_runner.parse_result(st)
+    if res.get("ok") is False:
+        raise cs_runner.CloudShareError(f"On the VM: {res.get('error')}")
+    if action == "traffic":
+        summ = collections.Counter(r["outcome"] for r in res.get("results", []))
+        log(f"CloudShare traffic done: {dict(summ)}", "ok")
+        res.setdefault("summary", dict(summ))
+    else:
+        log(f"CloudShare {action}: {json.dumps(res)[:300]}", "ok")
+    res["vm"] = vm_name
+    return res
+
+
+JOBS: dict = {}
+
+
+def start_job(fn) -> str:
+    """Long CloudShare runs (first one installs Python on the VM) outlive a browser request: run them in a thread."""
+    jid = secrets.token_hex(6)
+    JOBS[jid] = {"state": "running", "elapsed": 0}
+
+    def progress(sec):
+        JOBS[jid]["elapsed"] = sec
+
+    def work():
+        try:
+            JOBS[jid].update(state="done", result=fn(progress))
+        except (cs_runner.CloudShareError, zqs.ZiaError, ValueError) as e:
+            log(str(e), "error")
+            JOBS[jid].update(state="error", error=str(e))
+        except Exception as e:
+            log(f"{e.__class__.__name__}: {e}", "error")
+            JOBS[jid].update(state="error", error=f"{e.__class__.__name__}: {e}")
+    threading.Thread(target=work, daemon=True).start()
+    return jid
 
 
 # ----------------------------------------------------------------------------- AWS template
@@ -282,7 +363,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
         def _do(self, fn):
             try:
                 return self._send(200, fn())
-            except (zqs.ZiaError, ValueError) as e:
+            except (zqs.ZiaError, cs_runner.CloudShareError, ValueError) as e:
                 log(str(e), "error")
                 return self._send(400, {"error": str(e)})
             except Exception as e:  # unexpected: show it, keep the console alive
@@ -302,11 +383,22 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                 return self._send(200, {"vanity": vanity, "client_id": cid, "has_secret": bool(sec),
                                         "ca_bundle": c.get("ca_bundle", ""), "engines": c.get("engines") or zqs.DEFAULT_ENGINES,
                                         "aws": c.get("aws") or {}, "version": VERSION, "regions": QUICK_REGIONS,
-                                        "category_urls": zqs.QUICK_URLS})
+                                        "category_urls": zqs.QUICK_URLS,
+                                        "cloudshare": {k: v for k, v in cs_cfg(c).items()},
+                                        "cs_has_key": bool(get_secret("cloudshare_api_key")),
+                                        "traffic_source": c.get("traffic_source", "laptop")})
             if path == "/api/logs":
                 return self._send(200, {"logs": list(LOGS)})
             if path == "/api/zia/status":
                 return self._do(lambda: zia_status(load_cfg()))
+            q = dict(urllib.parse.parse_qsl(self.path.split("?", 1)[1])) if "?" in self.path else {}
+            if path == "/api/cloudshare/envs":
+                return self._do(lambda: {"envs": cs_client(load_cfg()).envs()})
+            if path == "/api/cloudshare/vms":
+                return self._do(lambda: {"vms": cs_client(load_cfg()).vms(q.get("env", ""))})
+            if path == "/api/jobs":
+                j = JOBS.get(q.get("id", ""))
+                return self._send(200 if j else 404, j or {"error": "no such job"})
             return self._send(404, {"error": "not found"})
 
         def do_POST(self):
@@ -326,6 +418,18 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                         c["engines"] = [e.strip() for e in b["engines"] if e.strip()]
                     if b.get("aws") is not None:
                         c["aws"] = {k: v for k, v in b["aws"].items() if k not in ("token", "zpa_key")}
+                    if b.get("cloudshare") is not None:
+                        cs = dict(c.get("cloudshare") or {})
+                        cs.update({k: (v or "").strip() for k, v in b["cloudshare"].items()
+                                   if k in ("api_id", "env_id", "env_name", "vm_id", "vm_name", "repo", "ref")})
+                        c["cloudshare"] = cs
+                    if b.get("cs_key"):
+                        try:
+                            set_secret(b["cs_key"], "cloudshare_api_key")
+                        except Exception as e:
+                            raise ValueError(f"Couldn't save the CloudShare key to the OS keychain: {e}")
+                    if b.get("traffic_source") in ("laptop", "cloudshare"):
+                        c["traffic_source"] = b["traffic_source"]
                     if b.get("secret"):
                         try:
                             set_secret(b["secret"])
@@ -346,6 +450,16 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
             if path == "/api/traffic":
                 return self._do(lambda: traffic(load_cfg(), b.get("scenarios") or SCENARIOS,
                                                 int(b.get("loops") or 1), b.get("region")))
+            if path == "/api/cloudshare/run":
+                c = load_cfg()
+                try:
+                    cs_vm(c)
+                except cs_runner.CloudShareError as e:
+                    return self._send(400, {"error": str(e)})
+                jid = start_job(lambda prog: cs_action(c, b.get("action", "traffic"), b.get("scenarios"),
+                                                       int(b.get("loops") or 1), b.get("region") or "",
+                                                       int(b.get("every") or 60), prog))
+                return self._send(200, {"job": jid})
             if path == "/api/aws/template":
                 try:
                     text = build_template(b)
@@ -387,7 +501,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
 
 
 # ----------------------------------------------------------------------------- install / uninstall
-APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "quick_traffic.py", "gui.html", "quick-kit", "quick-kit.cmd",
+APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "quick_traffic.py", "cs_runner.py", "cloudshare/run.ps1", "gui.html", "quick-kit", "quick-kit.cmd",
              "README.md", "aws/quick-demo-env.yaml", "aws/README.md"]
 WINDOWS = os.name == "nt"
 SHORTCUT = "Amazon Quick Demo Console"
@@ -464,7 +578,11 @@ def main(argv=None) -> None:
     t = sub.add_parser("traffic")
     t.add_argument("--loops", type=int, default=1)
     t.add_argument("--only", choices=SCENARIOS)
+    t.add_argument("--scenarios", help="comma list, e.g. dlp,upload (default: all)")
     t.add_argument("--region", choices=QUICK_REGIONS)
+    t.add_argument("--via", choices=["laptop", "cloudshare"], default="laptop",
+                   help="cloudshare: send from the CloudShare VM picked in the console")
+    t.add_argument("--json", action="store_true", help="print one QK_RESULT {json} line (used by cloudshare/run.ps1)")
     tp = sub.add_parser("template")
     tp.add_argument("--out", default="quick-demo-env.yaml")
     tp.add_argument("--project", default="zs-quick-demo")
@@ -495,10 +613,18 @@ def main(argv=None) -> None:
             for i in zia_status(cfg)["items"]:
                 print(f"  [{'✓' if i['exists'] else ' '}] {i['type']:<20} {i['name']}  {i['detail']}")
         elif a.cmd == "traffic":
-            r = traffic(cfg, [a.only] if a.only else SCENARIOS, a.loops, a.region)
-            for x in r["results"]:
-                print(f"  {x['outcome']:<10} {x['label']}")
-            print("Summary:", r["summary"])
+            sc = [a.only] if a.only else ([s.strip() for s in a.scenarios.split(",")] if a.scenarios else SCENARIOS)
+            if a.via == "cloudshare":
+                r = cs_action(cfg, "traffic", sc, a.loops, a.region or "",
+                              progress=lambda s: print(f"  waiting for the VM… {s}s", end="\r"))
+            else:
+                r = traffic(cfg, sc, a.loops, a.region)
+            if a.json:
+                print(cs_runner.MARK + json.dumps({"ok": True, **r}))
+            else:
+                for x in r.get("results", []):
+                    print(f"  {x['outcome']:<10} {x['label']}")
+                print("Summary:", r.get("summary"))
         elif a.cmd == "template":
             pathlib.Path(a.out).write_text(build_template({"project": a.project, "zpa": a.zpa, "ami": a.ami}), encoding="utf-8")
             print(f"Wrote {a.out}. Upload it in the CloudFormation console (Create stack > Upload a template file).")
@@ -511,7 +637,9 @@ def main(argv=None) -> None:
             for st in r["steps"]:
                 print(f"  [{'✓' if st['ok'] else '✗'}] {st['step']:<32} {st.get('status')} {st.get('note', '')}")
             print("Tools:", ", ".join(r["tools"]) or "none")
-    except (zqs.ZiaError, ValueError) as e:
+    except (zqs.ZiaError, cs_runner.CloudShareError, ValueError) as e:
+        if getattr(a, "json", False):
+            print(cs_runner.MARK + json.dumps({"ok": False, "error": str(e)}))
         sys.exit(str(e))
 
 
