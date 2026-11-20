@@ -322,5 +322,34 @@ class CloudShareTests(unittest.TestCase):
             qk.cs_vm({})
 
 
+class RetryTests(unittest.TestCase):
+    def test_retries_dns_hiccup_then_succeeds_and_reports_persistent_failure(self):
+        import requests
+        calls = []
+
+        class S:
+            def __init__(self, fail):
+                self.fail = fail
+            def request(self, method, url, **kw):
+                calls.append(url)
+                if len(calls) <= self.fail:
+                    raise requests.exceptions.ConnectionError("Failed to resolve 'api.zsapi.net' (nodename nor servname)")
+                r = types.SimpleNamespace(status_code=200, headers={}, text="{}")
+                return r
+        orig = zqs.__dict__.get("time")
+        import time as _t
+        sleep, _t.sleep = _t.sleep, lambda s: None
+        try:
+            self.assertEqual(zqs.send(S(2), "GET", "https://api.zsapi.net/zia/api/v1/x").status_code, 200)
+            calls.clear()
+            with self.assertRaises(zqs.ZiaError) as e:
+                zqs.send(S(99), "GET", "https://api.zsapi.net/zia/api/v1/x")
+            self.assertIn("DNS lookup failed", str(e.exception))
+            self.assertIn("Nothing was changed", str(e.exception))
+            self.assertEqual(len(calls), 4)
+        finally:
+            _t.sleep = sleep
+
+
 if __name__ == "__main__":
     unittest.main()

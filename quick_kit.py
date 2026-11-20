@@ -49,7 +49,7 @@ import quick_traffic  # noqa: E402
 import zia_quick_setup as zqs  # noqa: E402
 import zpa_quick  # noqa: E402
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 HOME = pathlib.Path(os.environ.get("QUICK_KIT_HOME", pathlib.Path.home() / ".quick-se-kit"))
 CFG_FILE = HOME / "config.json"
 LOG_FILE = HOME / "kit.log"

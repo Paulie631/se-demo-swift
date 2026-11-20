@@ -32,9 +32,13 @@ class ZPA:
         return f"{BASE}/v{v}/admin/customers/{self.cid}{path}"
 
     def req(self, method, path, body=None, params=None, v=1):
-        r = self.s.request(method, self._url(path, v), params=params, timeout=60,
-                           data=json.dumps(body) if body is not None else None,
-                           headers={"Content-Type": "application/json"})
+        from zia_quick_setup import ZiaError, send
+        try:
+            r = send(self.s, method, self._url(path, v), params=params, timeout=60,
+                     data=json.dumps(body) if body is not None else None,
+                     headers={"Content-Type": "application/json"})
+        except ZiaError as e:
+            raise ZpaError(str(e))
         if r.status_code in (401, 403):
             raise ZpaError(f"ZPA refused {method} {path} ({r.status_code}). Give the OneAPI client a ZPA role "
                            "(Administration › API › OneAPI › API Clients › Resources) and check the customer ID.")

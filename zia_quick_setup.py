@@ -56,12 +56,38 @@ class ZiaError(Exception):
     """Raised for auth/API failures so callers (CLI or GUI) can show the message."""
 
 
+def send(session, method, url, attempts=4, **kw):
+    """One API call with retries for brief network trouble (DNS hiccups while Client Connector or Wi-Fi reconnects,
+    resets, timeouts) and for ZIA's 429 rate limit. Raises ZiaError with a plain explanation if it keeps failing."""
+    import time
+    host = url.split("/")[2]
+    for i in range(attempts):
+        try:
+            r = session.request(method, url, **kw)
+        except requests.exceptions.SSLError:
+            raise ZiaError(f"TLS error talking to {host}. If SSL inspection is on for this laptop, set a CA bundle "
+                           "under Setup › Advanced.")
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if i == attempts - 1:
+                dns = "resolve" in str(e).lower() or "nodename" in str(e).lower() or "getaddrinfo" in str(e).lower()
+                raise ZiaError(
+                    f"Couldn't reach {host} after {attempts} tries"
+                    + (" (DNS lookup failed)" if dns else f" ({e.__class__.__name__})") + ". Check this laptop's "
+                    "network or Client Connector connection and try again. Nothing was changed by the failed call.")
+            time.sleep(2 * (i + 1))
+            continue
+        if r.status_code == 429 and i < attempts - 1:
+            time.sleep(min(int(r.headers.get("Retry-After") or 0) or 2 * (i + 1), 30))
+            continue
+        return r
+
+
 class ZIA:
     def __init__(self, vanity, client_id, client_secret, verify=True):
         self.s = requests.Session()
         self.s.verify = verify
-        tok = self.s.post(
-            f"https://{vanity}.zslogin.net/oauth2/v1/token",
+        tok = send(
+            self.s, "POST", f"https://{vanity}.zslogin.net/oauth2/v1/token",
             data={
                 "grant_type": "client_credentials",
                 "client_id": client_id,
@@ -78,7 +104,7 @@ class ZIA:
         )
 
     def _req(self, method, path, **kw):
-        r = self.s.request(method, API_BASE + path, timeout=60, **kw)
+        r = send(self.s, method, API_BASE + path, timeout=60, **kw)
         if r.status_code >= 400:
             raise ZiaError(f"[api] {method} {path} -> {r.status_code}: {r.text[:500]}")
         return r.json() if r.text.strip() else {}
