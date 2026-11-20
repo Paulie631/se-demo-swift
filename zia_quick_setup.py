@@ -32,8 +32,12 @@ API_BASE = "https://api.zsapi.net/zia/api/v1"
 AUDIENCE = "https://api.zscaler.com"
 
 CATEGORY_NAME = "Amazon Quick (Demo)"
-URL_RULE_NAME = "Amazon Quick - Coach (Demo)"
-DLP_RULE_NAME = "Amazon Quick - Block PII/PCI (Demo)"
+# ZIA rule names max out at 31 characters.
+URL_RULE_NAME = "Quick - Coach (Demo)"
+DLP_RULE_NAME = "Quick - Block PII/PCI (Demo)"
+SSL_RULE_NAME = "Quick - Inspect (Demo)"
+USER_GROUP_NAME = "Amazon Quick Demo"
+TEST_USER_DISPLAY = "Quick Demo User"
 
 # Quick launch regions: us-east-1, us-west-2, ap-southeast-2, eu-west-1.
 # Leading "." = match all subdomains. Source: AWS "Domains accessed by Quick".
@@ -81,6 +85,7 @@ class ZIA:
 
     def get(self, p, **kw):    return self._req("GET", p, **kw)
     def post(self, p, body):   return self._req("POST", p, data=json.dumps(body))
+    def put(self, p, body):    return self._req("PUT", p, data=json.dumps(body))
     def delete(self, p):       return self._req("DELETE", p)
 
 
@@ -92,8 +97,45 @@ def show(title, body, log=print):
     log(f"\n--- {title} ---\n{json.dumps(body, indent=2)}")
 
 
-def setup(z, apply, engine_names, log=print):
+SSL_DECRYPT = {"type": "DECRYPT",
+               "decryptSubActions": {"serverCertificates": "ALLOW", "ocspCheck": True,
+                                     "blockSslTrafficWithNoSniEnabled": False,
+                                     "minClientTLSVersion": "CLIENT_TLS_1_0", "minServerTLSVersion": "SERVER_TLS_1_0",
+                                     "blockUndecrypt": False}}
+
+
+def _scope_ids(rule):
+    return sorted(str(u.get("id")) for u in (rule.get("users") or []))
+
+
+def _ensure_rule(z, path, name, body, users, apply, log, label):
+    """Create the rule if missing; if it exists with a different user scope, update its scope. Returns changed."""
+    want = [{"id": u} for u in users]
+    existing = find_by_name(z.get(path), name)
+    if existing:
+        if _scope_ids(existing) == sorted(str(u) for u in users):
+            log(f"[ok] {label} exists: {name}")
+            return False
+        log(f"[~] {label} '{name}': scope -> {'user ' + ', '.join(map(str, users)) if users else 'everyone'}")
+        if apply:
+            upd = dict(existing, users=want)
+            z.put(f"{path}/{existing['id']}", upd)
+        return apply
+    if users:
+        body = dict(body, users=want)
+    show(f"CREATE {label}", body, log)
+    if apply:
+        z.post(path, body)
+        log(f"[+] created {label}")
+    return apply
+
+
+def setup(z, apply, engine_names, log=print, user_ids=None, ssl=True):
+    """URL category, SSL inspection (DECRYPT) for it, Caution URL rule, Block DLP rule.
+    user_ids: scope every rule to these ZIA user IDs (recommended: a test user); None/[] = everyone."""
+    users = [u for u in (user_ids or []) if u]
     changed = False
+    log(f"Scope: {'user ID ' + ', '.join(map(str, users)) if users else 'everyone in the tenant (no test user picked)'}")
 
     # 1. Custom URL category
     cats = z.get("/urlCategories", params={"customOnly": "true"})
@@ -116,29 +158,22 @@ def setup(z, apply, engine_names, log=print):
             log(f"[+] created {cat_id}")
             changed = True
 
-    # 2. URL filtering rule (CAUTION = coaching / AUP page on first visit)
-    rules = z.get("/urlFilteringRules")
-    if find_by_name(rules, URL_RULE_NAME):
-        log(f"[ok] URL filtering rule exists: {URL_RULE_NAME}")
-    else:
-        body = {
-            "name": URL_RULE_NAME,
-            "order": 1,
-            "rank": 7,
-            "state": "ENABLED",
-            "action": "CAUTION",
-            "urlCategories": [cat_id],
-            "protocols": ["ANY_RULE"],
-            "requestMethods": ["CONNECT", "GET", "HEAD"],
-            "description": "Show AUP coaching before Amazon Quick use (demo kit)",
-        }
-        show("CREATE URL filtering rule", body, log)
-        if apply:
-            z.post("/urlFilteringRules", body)
-            log("[+] created URL filtering rule")
-            changed = True
+    # 2. SSL inspection: decrypt Quick traffic so DLP can see prompts and uploads
+    if ssl:
+        changed |= _ensure_rule(z, "/sslInspectionRules", SSL_RULE_NAME, {
+            "name": SSL_RULE_NAME, "order": 1, "rank": 7, "state": "ENABLED",
+            "urlCategories": [cat_id], "action": SSL_DECRYPT,
+            "description": "Decrypt Amazon Quick so DLP can inspect prompts and uploads (demo kit)",
+        }, users, apply, log, "SSL inspection rule")
 
-    # 3. Web DLP rule
+    # 3. URL filtering rule (CAUTION = coaching / AUP page on first visit)
+    changed |= _ensure_rule(z, "/urlFilteringRules", URL_RULE_NAME, {
+        "name": URL_RULE_NAME, "order": 1, "rank": 7, "state": "ENABLED", "action": "CAUTION",
+        "urlCategories": [cat_id], "protocols": ["ANY_RULE"], "requestMethods": ["CONNECT", "GET", "HEAD"],
+        "description": "Show AUP coaching before Amazon Quick use (demo kit)",
+    }, users, apply, log, "URL filtering rule")
+
+    # 4. Web DLP rule
     engines = z.get("/dlpEngines")
     picked = []
     for want in engine_names:
@@ -151,38 +186,21 @@ def setup(z, apply, engine_names, log=print):
         names = ", ".join(sorted(e.get("name", "?") for e in engines))
         raise ZiaError(f"[dlp] none of {engine_names} found. Available engines: {names}")
     log(f"[ok] DLP engines: {', '.join(p['name'] for p in picked)}")
-
-    dlp_rules = z.get("/webDlpRules")
-    if find_by_name(dlp_rules, DLP_RULE_NAME):
-        log(f"[ok] DLP rule exists: {DLP_RULE_NAME}")
-    else:
-        body = {
-            "name": DLP_RULE_NAME,
-            "order": 1,
-            "rank": 7,
-            "state": "ENABLED",
-            "action": "BLOCK",
-            "protocols": ["HTTPS_RULE", "HTTP_RULE"],
-            "urlCategories": [{"id": cat_id}],
-            "dlpEngines": [{"id": p["id"]} for p in picked],
-            "withoutContentInspection": False,
-            "matchOnly": False,
-            "description": "Block PII/PCI in Amazon Quick prompts and uploads (demo kit)",
-        }
-        show("CREATE Web DLP rule", body, log)
-        if apply:
-            z.post("/webDlpRules", body)
-            log("[+] created DLP rule")
-            changed = True
-
+    changed |= _ensure_rule(z, "/webDlpRules", DLP_RULE_NAME, {
+        "name": DLP_RULE_NAME, "order": 1, "rank": 7, "state": "ENABLED", "action": "BLOCK",
+        "protocols": ["HTTPS_RULE", "HTTP_RULE"], "urlCategories": [{"id": cat_id}],
+        "dlpEngines": [{"id": p["id"]} for p in picked], "withoutContentInspection": False, "matchOnly": False,
+        "description": "Block PII/PCI in Amazon Quick prompts and uploads (demo kit)",
+    }, users, apply, log, "Web DLP rule")
     return changed
 
 
-def teardown(z, apply, log=print):
+def teardown(z, apply, log=print, created_user=None):
+    """Remove the demo rules and category; plus the test user/group/department if the kit created them."""
     changed = False
-    for path, name, key in [("/webDlpRules", DLP_RULE_NAME, "name"),
-                            ("/urlFilteringRules", URL_RULE_NAME, "name")]:
-        hit = find_by_name(z.get(path), name, key)
+    for path, name in [("/webDlpRules", DLP_RULE_NAME), ("/urlFilteringRules", URL_RULE_NAME),
+                       ("/sslInspectionRules", SSL_RULE_NAME)]:
+        hit = find_by_name(z.get(path), name)
         if hit:
             log(f"[-] delete {path}/{hit['id']} ({name})")
             if apply:
@@ -195,13 +213,88 @@ def teardown(z, apply, log=print):
         if apply:
             z.delete(f"/urlCategories/{cat['id']}")
             changed = True
+    cu = created_user or {}
+    for path, key in (("/users", "id"), ("/groups", "group_id"), ("/departments", "dept_id")):
+        if cu.get(key):
+            log(f"[-] delete {path}/{cu[key]} (kit-created test {path.strip('/')[:-1]})")
+            if apply:
+                try:
+                    z.delete(f"{path}/{cu[key]}")
+                    changed = True
+                except ZiaError as e:
+                    log(f"[!] couldn't delete {path}/{cu[key]}: {e}")
     return changed
 
 
-def run(z, apply=False, do_teardown=False, engine_names=None, log=print):
+# ---------------------------------------------------------------- test user
+def find_user(z, email):
+    email = (email or "").strip().lower()
+    users = z.get("/users", params={"pageSize": 10000}) or []
+    return next((u for u in users if str(u.get("email", "")).lower() == email), None)
+
+
+def auth_mode(z):
+    """'hosted' (Hosted DB, form sign-in: the kit can create the user and its password), 'saml', 'directory'."""
+    try:
+        a = z.get("/authSettings") or {}
+    except ZiaError:
+        return None
+    if a.get("samlEnabled"):
+        return "saml"
+    return "hosted" if str(a.get("orgAuthType", "")).upper() == "SAFECHANNEL_DIR" else "directory"
+
+
+def gen_password(n=20):
+    import secrets as _s
+    import string
+    special = "!@#$%^&*-_=+"
+    pool = string.ascii_letters + string.digits + special
+    while True:
+        pw = "".join(_s.choice(pool) for _ in range(n))
+        if (any(c.islower() for c in pw) and any(c.isupper() for c in pw) and any(c.isdigit() for c in pw)
+                and any(c in special for c in pw)):
+            return pw
+
+
+def _ensure_ref(z, path, name, log):
+    hit = find_by_name(z.get(path, params={"search": name}) or [], name)
+    if hit:
+        return hit
+    made = z.post(path, {"name": name, "comments": "Created by the Amazon Quick SE demo kit"})
+    log(f"[+] created {path.strip('/')[:-1]} '{name}'")
+    return made
+
+
+def create_test_user(z, email, log=print):
+    """Create a ZIA user (Hosted DB tenants only) in its own group and department. Returns (user, password, meta)."""
+    mode = auth_mode(z)
+    if mode in ("saml", "directory"):
+        raise ZiaError(f"This tenant's users come from {'a SAML IdP' if mode == 'saml' else 'a directory'}, so the kit "
+                       "can't create one with a password. Create the user in your IdP or ZIdentity, then use "
+                       "'Use existing user' with its email.")
+    if find_user(z, email):
+        raise ZiaError(f"{email} already exists. Use 'Use existing user' instead.")
+    grp = _ensure_ref(z, "/groups", USER_GROUP_NAME, log)
+    dept = _ensure_ref(z, "/departments", USER_GROUP_NAME, log)
+    pw = gen_password()
+    try:
+        user = z.post("/users", {"name": TEST_USER_DISPLAY, "email": email, "password": pw,
+                                 "groups": [{"id": grp["id"]}], "department": {"id": dept["id"]},
+                                 "comments": "Test user for the Amazon Quick SE demo kit"})
+    except ZiaError as e:
+        if "password" in str(e).lower():
+            raise ZiaError("ZIA rejected the generated password. Check Password Strength under Internet "
+                           "Authentication Settings, or create the user yourself and use 'Use existing user'.")
+        raise
+    log(f"[+] created test user {email} (group and department '{USER_GROUP_NAME}')")
+    return user, pw, {"id": user["id"], "email": email, "group_id": grp["id"], "dept_id": dept["id"]}
+
+
+def run(z, apply=False, do_teardown=False, engine_names=None, log=print, user_ids=None, ssl=True,
+        created_user=None):
     """Setup or teardown, then activate if anything changed. Returns True if changes were made."""
-    changed = (teardown(z, apply, log) if do_teardown
-               else setup(z, apply, engine_names or DEFAULT_ENGINES, log))
+    changed = (teardown(z, apply, log, created_user) if do_teardown
+               else setup(z, apply, engine_names or DEFAULT_ENGINES, log, user_ids, ssl))
     if changed:
         z.post("/status/activate", {})
         log("[✓] Changes activated.")

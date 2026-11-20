@@ -8,6 +8,8 @@
   ./quick-kit config           save the OneAPI vanity domain, client ID and secret (secret goes to the OS keychain)
   ./quick-kit setup            preview the ZIA demo policy (dry run); --apply to create + activate; --teardown
   ./quick-kit status           check credentials and which demo objects exist in ZIA
+  ./quick-kit user find|create|clear EMAIL   scope the demo policy to a test user (create: Hosted DB tenants)
+  ./quick-kit zpa              ZPA app segment + access rule for the PrivateLink path (--apply, --teardown)
   ./quick-kit traffic          send Quick-shaped demo traffic through Client Connector (--loops N, --only dlp|...)
                                --via cloudshare: send it from your CloudShare VM instead of this laptop
   ./quick-kit template         write the AWS CloudFormation template (--out FILE, --project, --zpa, --ami ...)
@@ -45,8 +47,9 @@ sys.path.insert(0, str(HERE))
 import cs_runner  # noqa: E402
 import quick_traffic  # noqa: E402
 import zia_quick_setup as zqs  # noqa: E402
+import zpa_quick  # noqa: E402
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 HOME = pathlib.Path(os.environ.get("QUICK_KIT_HOME", pathlib.Path.home() / ".quick-se-kit"))
 CFG_FILE = HOME / "config.json"
 LOG_FILE = HOME / "kit.log"
@@ -132,27 +135,102 @@ def zia_run(cfg: dict, apply: bool, teardown: bool) -> dict:
         log(str(m), "zia")
 
     z = zia_connect(cfg)
-    log(f"ZIA {'teardown' if teardown else 'setup'} ({'APPLY' if apply else 'dry run'})", "action")
-    changed = zqs.run(z, apply, teardown, cfg.get("engines") or zqs.DEFAULT_ENGINES, capture)
+    zu = cfg.get("zia_user") or {}
+    log(f"ZIA {'teardown' if teardown else 'setup'} ({'APPLY' if apply else 'dry run'})"
+        + (f", scoped to {zu.get('email')}" if zu.get("id") and not teardown else ""), "action")
+    changed = zqs.run(z, apply, teardown, cfg.get("engines") or zqs.DEFAULT_ENGINES, capture,
+                      user_ids=[zu["id"]] if zu.get("id") else None, ssl=cfg.get("ssl", True),
+                      created_user=zu.get("created"))
+    if teardown and apply and zu.get("created"):
+        cfg.pop("zia_user", None)
+        save_cfg(cfg)
+        try:
+            set_secret("", "zia_test_user_password")
+        except Exception:
+            pass
     return {"changed": changed, "apply": apply, "teardown": teardown, "output": "\n".join(lines)}
+
+
+def zia_user(cfg: dict, action: str, email: str = "") -> dict:
+    """Pick the user the demo policy is scoped to: find an existing one, create one (Hosted DB tenants), or clear."""
+    if action == "clear":
+        cfg.pop("zia_user", None)
+        save_cfg(cfg)
+        log("Demo policy scope cleared: it will apply to everyone", "action")
+        return {"user": None}
+    email = (email or "").strip()
+    if "@" not in email:
+        raise ValueError("Enter the test user's full email address.")
+    z = zia_connect(cfg)
+    if action == "find":
+        u = zqs.find_user(z, email)
+        if not u:
+            raise ValueError(f"{email} isn't a ZIA user in this tenant. Check the address, or use Create test user.")
+        cfg["zia_user"] = {"id": u["id"], "email": u.get("email"), "name": u.get("name")}
+        log(f"Demo policy will be scoped to {email} (ZIA user {u['id']})", "ok")
+    elif action == "create":
+        u, pw, meta = zqs.create_test_user(z, email, lambda m: log(m, "zia"))
+        try:
+            set_secret(pw, "zia_test_user_password")
+        except Exception as e:
+            raise ValueError(f"Created {email}, but couldn't save its password to the keychain ({e}). Reset the "
+                             "password in the ZIA console.")
+        cfg["zia_user"] = {"id": u["id"], "email": email, "name": u.get("name"), "created": meta}
+        z.post("/status/activate", {})
+        log(f"Created {email}; password saved in the keychain (Show password on the Setup tab)", "ok")
+    else:
+        raise ValueError(f"Unknown action {action}")
+    save_cfg(cfg)
+    return {"user": cfg["zia_user"]}
+
+
+# ----------------------------------------------------------------------------- ZPA
+def zpa_client(cfg: dict) -> zpa_quick.ZPA:
+    return zpa_quick.ZPA(zia_connect(cfg).s, (cfg.get("zpa") or {}).get("customer_id", ""))
+
+
+def zpa_region(cfg: dict) -> str:
+    return (cfg.get("aws") or {}).get("region") or "us-east-1"
+
+
+def zpa_run(cfg: dict, apply: bool, teardown: bool) -> dict:
+    lines: list[str] = []
+
+    def capture(m):
+        lines.append(str(m))
+        log(str(m), "zpa")
+
+    z = zpa_client(cfg)
+    log(f"ZPA {'teardown' if teardown else 'setup'} ({'APPLY' if apply else 'dry run'}), region {zpa_region(cfg)}",
+        "action")
+    changed = (zpa_quick.teardown(z, apply, capture) if teardown else
+               zpa_quick.setup(z, zpa_region(cfg), (cfg.get("zpa") or {}).get("connector_group_id", ""), apply,
+                               capture))
+    return {"changed": changed, "output": "\n".join(lines)}
 
 
 def zia_status(cfg: dict) -> dict:
     z = zia_connect(cfg)
     cats = z.get("/urlCategories", params={"customOnly": "true"})
     cat = zqs.find_by_name(cats, zqs.CATEGORY_NAME, key="configuredName")
+    ssl = zqs.find_by_name(z.get("/sslInspectionRules"), zqs.SSL_RULE_NAME)
     url = zqs.find_by_name(z.get("/urlFilteringRules"), zqs.URL_RULE_NAME)
     dlp = zqs.find_by_name(z.get("/webDlpRules"), zqs.DLP_RULE_NAME)
     items = [
         {"name": zqs.CATEGORY_NAME, "type": "URL category", "exists": bool(cat),
          "detail": f"{cat['id']} · {len(cat.get('urls') or [])} domains" if cat else ""},
+        {"name": zqs.SSL_RULE_NAME, "type": "SSL inspection rule", "exists": bool(ssl),
+         "detail": f"{(ssl.get('action') or {}).get('type')} · {ssl.get('state')}" if ssl else ""},
         {"name": zqs.URL_RULE_NAME, "type": "URL filtering rule", "exists": bool(url),
          "detail": f"{url.get('action')} · {url.get('state')}" if url else ""},
         {"name": zqs.DLP_RULE_NAME, "type": "Web DLP rule", "exists": bool(dlp),
          "detail": f"{dlp.get('action')} · {', '.join(str(e.get('name') or e.get('id')) for e in dlp.get('dlpEngines') or [])}"
          if dlp else ""},
     ]
-    log(f"Status: {sum(i['exists'] for i in items)}/3 demo objects present", "zia")
+    for i, r in ((1, ssl), (2, url), (3, dlp)):
+        if r:
+            items[i]["detail"] += " · " + (f"{len(r.get('users'))} user(s)" if r.get("users") else "everyone")
+    log(f"Status: {sum(i['exists'] for i in items)}/{len(items)} demo objects present", "zia")
     return {"items": items, "ready": all(i["exists"] for i in items)}
 
 
@@ -363,7 +441,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
         def _do(self, fn):
             try:
                 return self._send(200, fn())
-            except (zqs.ZiaError, cs_runner.CloudShareError, ValueError) as e:
+            except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, ValueError) as e:
                 log(str(e), "error")
                 return self._send(400, {"error": str(e)})
             except Exception as e:  # unexpected: show it, keep the console alive
@@ -386,7 +464,10 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                                         "category_urls": zqs.QUICK_URLS,
                                         "cloudshare": {k: v for k, v in cs_cfg(c).items()},
                                         "cs_has_key": bool(get_secret("cloudshare_api_key")),
-                                        "traffic_source": c.get("traffic_source", "laptop")})
+                                        "traffic_source": c.get("traffic_source", "laptop"),
+                                        "zia_user": c.get("zia_user"), "ssl": c.get("ssl", True),
+                                        "has_user_pw": bool(get_secret("zia_test_user_password")),
+                                        "zpa": c.get("zpa") or {}})
             if path == "/api/logs":
                 return self._send(200, {"logs": list(LOGS)})
             if path == "/api/zia/status":
@@ -396,6 +477,14 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                 return self._do(lambda: {"envs": cs_client(load_cfg()).envs()})
             if path == "/api/cloudshare/vms":
                 return self._do(lambda: {"vms": cs_client(load_cfg()).vms(q.get("env", ""))})
+            if path == "/api/zia/password":
+                pw = get_secret("zia_test_user_password")
+                log("Test user password shown in the console", "action")
+                return self._send(200 if pw else 404, {"password": pw} if pw else {"error": "No password saved"})
+            if path == "/api/zpa/groups":
+                return self._do(lambda: {"groups": zpa_client(load_cfg()).connector_groups()})
+            if path == "/api/zpa/status":
+                return self._do(lambda: {"items": zpa_quick.status(zpa_client(load_cfg()))})
             if path == "/api/jobs":
                 j = JOBS.get(q.get("id", ""))
                 return self._send(200 if j else 404, j or {"error": "no such job"})
@@ -428,6 +517,13 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                             set_secret(b["cs_key"], "cloudshare_api_key")
                         except Exception as e:
                             raise ValueError(f"Couldn't save the CloudShare key to the OS keychain: {e}")
+                    if b.get("zpa") is not None:
+                        zp = dict(c.get("zpa") or {})
+                        zp.update({k: str(v or "").strip() for k, v in b["zpa"].items()
+                                   if k in ("customer_id", "connector_group_id", "connector_group_name")})
+                        c["zpa"] = zp
+                    if "ssl" in b:
+                        c["ssl"] = bool(b["ssl"])
                     if b.get("traffic_source") in ("laptop", "cloudshare"):
                         c["traffic_source"] = b["traffic_source"]
                     if b.get("secret"):
@@ -447,6 +543,10 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                 return self._do(test)
             if path == "/api/zia/run":
                 return self._do(lambda: zia_run(load_cfg(), bool(b.get("apply")), bool(b.get("teardown"))))
+            if path == "/api/zia/user":
+                return self._do(lambda: zia_user(load_cfg(), b.get("action", "find"), b.get("email", "")))
+            if path == "/api/zpa/run":
+                return self._do(lambda: zpa_run(load_cfg(), bool(b.get("apply")), bool(b.get("teardown"))))
             if path == "/api/traffic":
                 return self._do(lambda: traffic(load_cfg(), b.get("scenarios") or SCENARIOS,
                                                 int(b.get("loops") or 1), b.get("region")))
@@ -501,7 +601,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
 
 
 # ----------------------------------------------------------------------------- install / uninstall
-APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "quick_traffic.py", "cs_runner.py", "cloudshare/run.ps1", "gui.html", "quick-kit", "quick-kit.cmd",
+APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "zpa_quick.py", "quick_traffic.py", "cs_runner.py", "cloudshare/run.ps1", "gui.html", "quick-kit", "quick-kit.cmd",
              "README.md", "aws/quick-demo-env.yaml", "aws/README.md"]
 WINDOWS = os.name == "nt"
 SHORTCUT = "Amazon Quick Demo Console"
@@ -575,6 +675,12 @@ def main(argv=None) -> None:
     s.add_argument("--apply", action="store_true")
     s.add_argument("--teardown", action="store_true")
     sub.add_parser("status")
+    zp = sub.add_parser("zpa", help="ZPA objects for the PrivateLink path (dry run unless --apply)")
+    zp.add_argument("--apply", action="store_true")
+    zp.add_argument("--teardown", action="store_true")
+    us = sub.add_parser("user", help="scope the demo policy to a test user")
+    us.add_argument("action", choices=["find", "create", "clear"])
+    us.add_argument("email", nargs="?", default="")
     t = sub.add_parser("traffic")
     t.add_argument("--loops", type=int, default=1)
     t.add_argument("--only", choices=SCENARIOS)
@@ -609,6 +715,11 @@ def main(argv=None) -> None:
             print("Saved. The secret is in your OS keychain, not in", CFG_FILE)
         elif a.cmd == "setup":
             print(zia_run(cfg, a.apply, a.teardown)["output"])
+        elif a.cmd == "zpa":
+            print(zpa_run(cfg, a.apply, a.teardown)["output"])
+        elif a.cmd == "user":
+            r = zia_user(cfg, a.action, a.email)
+            print("Scope:", (r["user"] or {}).get("email") or "everyone")
         elif a.cmd == "status":
             for i in zia_status(cfg)["items"]:
                 print(f"  [{'✓' if i['exists'] else ' '}] {i['type']:<20} {i['name']}  {i['detail']}")
@@ -637,7 +748,7 @@ def main(argv=None) -> None:
             for st in r["steps"]:
                 print(f"  [{'✓' if st['ok'] else '✗'}] {st['step']:<32} {st.get('status')} {st.get('note', '')}")
             print("Tools:", ", ".join(r["tools"]) or "none")
-    except (zqs.ZiaError, cs_runner.CloudShareError, ValueError) as e:
+    except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, ValueError) as e:
         if getattr(a, "json", False):
             print(cs_runner.MARK + json.dumps({"ok": False, "error": str(e)}))
         sys.exit(str(e))

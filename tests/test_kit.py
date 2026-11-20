@@ -18,12 +18,22 @@ import zia_quick_setup as zqs  # noqa: E402
 class FakeZIA:
     """Just enough of the ZIA API for setup / status / teardown."""
     def __init__(self):
-        self.cats, self.url_rules, self.dlp_rules, self.activated, self.n = [], [], [], 0, 0
+        self.cats, self.url_rules, self.dlp_rules, self.ssl_rules = [], [], [], []
+        self.users, self.groups, self.depts, self.activated, self.n = [], [], [], 0, 0
+        self.auth = {"orgAuthType": "SAFECHANNEL_DIR", "samlEnabled": False}
         self.engines = [{"id": 1, "name": "PCI"}, {"id": 2, "name": "PII"}, {"id": 3, "name": "GLBA"}, {"id": 4, "name": "HIPAA"}]
 
+    def _lists(self):
+        return {"/urlCategories": self.cats, "/urlFilteringRules": self.url_rules, "/webDlpRules": self.dlp_rules,
+                "/sslInspectionRules": self.ssl_rules, "/users": self.users, "/groups": self.groups,
+                "/departments": self.depts}
+
     def get(self, p, **kw):
-        return {"/urlCategories": self.cats, "/urlFilteringRules": self.url_rules,
-                "/webDlpRules": self.dlp_rules, "/dlpEngines": self.engines}[p]
+        if p == "/dlpEngines":
+            return self.engines
+        if p == "/authSettings":
+            return self.auth
+        return self._lists()[p]
 
     def post(self, p, body):
         if p == "/status/activate":
@@ -31,12 +41,18 @@ class FakeZIA:
             return {}
         self.n += 1
         body = dict(body, id=f"CUSTOM_{self.n:02d}" if p == "/urlCategories" else self.n)
-        {"/urlCategories": self.cats, "/urlFilteringRules": self.url_rules, "/webDlpRules": self.dlp_rules}[p].append(body)
+        self._lists()[p].append(body)
+        return body
+
+    def put(self, p, body):
+        base, i = p.rsplit("/", 1)
+        lst = self._lists()[base]
+        lst[:] = [body if str(x["id"]) == i else x for x in lst]
         return body
 
     def delete(self, p):
         base, i = p.rsplit("/", 1)
-        lst = {"/urlCategories": self.cats, "/urlFilteringRules": self.url_rules, "/webDlpRules": self.dlp_rules}[base]
+        lst = self._lists()[base]
         lst[:] = [x for x in lst if str(x["id"]) != i]
         return {}
 
@@ -60,11 +76,17 @@ class ZiaTests(unittest.TestCase):
         self.assertEqual([e["id"] for e in dlp["dlpEngines"]], [1, 2, 3])
         self.assertEqual(dlp["urlCategories"], [{"id": "CUSTOM_01"}])
         self.assertEqual(self.z.url_rules[0]["urlCategories"], ["CUSTOM_01"])
+        ssl = self.z.ssl_rules[0]
+        self.assertEqual(ssl["action"]["type"], "DECRYPT")
+        self.assertEqual(ssl["urlCategories"], ["CUSTOM_01"])
+        for r in (ssl, self.z.url_rules[0], dlp):
+            self.assertLessEqual(len(r["name"]), 31, r["name"])
+            self.assertNotIn("users", r)
         self.assertTrue(qk.zia_status({})["ready"])
         self.assertFalse(qk.zia_run({}, True, False)["changed"])      # second run: nothing to do
         self.assertEqual(self.z.activated, 1)
         self.assertTrue(qk.zia_run({}, True, True)["changed"])        # teardown
-        self.assertEqual((self.z.cats, self.z.url_rules, self.z.dlp_rules), ([], [], []))
+        self.assertEqual((self.z.cats, self.z.url_rules, self.z.dlp_rules, self.z.ssl_rules), ([], [], [], []))
         self.assertFalse(qk.zia_status({})["ready"])
 
     def test_missing_engines_is_a_clear_error(self):
@@ -72,6 +94,112 @@ class ZiaTests(unittest.TestCase):
         with self.assertRaises(zqs.ZiaError) as e:
             qk.zia_run({}, True, False)
         self.assertIn("Available engines", str(e.exception))
+
+    def test_test_user_scope_and_teardown(self):
+        saved = {}
+        orig = (qk.set_secret, qk.save_cfg)
+        qk.set_secret = lambda v, name="": saved.__setitem__(name, v)
+        qk.save_cfg = lambda c: None
+        try:
+            cfg = {}
+            r = qk.zia_user(cfg, "create", "quick-demo@acme.example")
+            uid = r["user"]["id"]
+            self.assertTrue(saved["zia_test_user_password"])
+            self.assertEqual(self.z.users[0]["groups"], [{"id": self.z.groups[0]["id"]}])
+            qk.zia_run(cfg, True, False)
+            for rule in (self.z.ssl_rules[0], self.z.url_rules[0], self.z.dlp_rules[0]):
+                self.assertEqual(rule["users"], [{"id": uid}])
+            # rescoping to everyone updates the existing rules in place
+            scoped = dict(cfg); scoped.pop("zia_user")
+            self.assertTrue(qk.zia_run(scoped, True, False)["changed"])
+            self.assertEqual(self.z.url_rules[0]["users"], [])
+            qk.zia_run(cfg, True, True)
+            self.assertEqual((self.z.users, self.z.groups, self.z.depts), ([], [], []))
+            self.assertNotIn("zia_user", cfg)
+        finally:
+            qk.set_secret, qk.save_cfg = orig
+
+    def test_create_refused_for_idp_tenants(self):
+        self.z.auth = {"orgAuthType": "SAFECHANNEL_DIR", "samlEnabled": True}
+        with self.assertRaises(zqs.ZiaError) as e:
+            qk.zia_user({}, "create", "x@acme.example")
+        self.assertIn("SAML", str(e.exception))
+
+    def test_find_existing_user(self):
+        self.z.users.append({"id": 77, "email": "SE-Demo@Acme.example", "name": "SE-Demo Traffic"})
+        orig = qk.save_cfg
+        qk.save_cfg = lambda c: None
+        try:
+            self.assertEqual(qk.zia_user({}, "find", "se-demo@acme.example")["user"]["id"], 77)
+            with self.assertRaises(ValueError):
+                qk.zia_user({}, "find", "nobody@acme.example")
+        finally:
+            qk.save_cfg = orig
+
+
+class FakeZpaSession:
+    """requests.Session stand-in for the ZPA API."""
+    def __init__(self):
+        self.store = {"segmentGroup": [], "serverGroup": [], "application": [], "rule": []}
+        self.groups = [{"id": "500", "name": "AWS Quick demo", "enabled": True, "connectors": [{"id": 1}]}]
+        self.n, self.calls = 100, []
+
+    def request(self, method, url, params=None, timeout=None, data=None, headers=None):
+        import re
+        self.calls.append((method, url, json.loads(data) if data else None))
+        path = re.sub(r"^.*/customers/\d+", "", url)
+        body = json.loads(data) if data else None
+
+        class R:
+            def __init__(s, obj, code=200):
+                s.status_code, s._o, s.text = code, obj, json.dumps(obj) if obj is not None else ""
+            def json(s):
+                return s._o
+        if path == "/appConnectorGroup":
+            return R({"totalPages": 1, "list": self.groups})
+        if path == "/policySet/policyType/ACCESS_POLICY":
+            return R({"id": "PS1"})
+        key = "rule" if "/rule" in path else path.strip("/").split("/")[0]
+        lst = self.store[key]
+        if method == "GET":
+            return R({"totalPages": 1, "list": lst})
+        if method == "POST":
+            self.n += 1
+            obj = dict(body, id=str(self.n)); lst.append(obj)
+            return R(obj)
+        if method == "DELETE":
+            i = path.rstrip("/").split("/")[-1]
+            lst[:] = [x for x in lst if x["id"] != i]
+            return R(None, 204)
+        return R({}, 404)
+
+
+class ZpaTests(unittest.TestCase):
+    def test_setup_status_teardown(self):
+        import zpa_quick
+        s = FakeZpaSession()
+        z = zpa_quick.ZPA(s, "216196257331281920")
+        self.assertEqual(z.connector_groups()[0]["connectors"], 1)
+        self.assertFalse(zpa_quick.setup(z, "eu-west-1", "500", apply=False, log=lambda m: None))
+        self.assertEqual(s.store["application"], [])
+        self.assertTrue(zpa_quick.setup(z, "eu-west-1", "500", apply=True, log=lambda m: None))
+        app = s.store["application"][0]
+        self.assertEqual(app["domainNames"], ["eu-west-1.quicksight.aws.amazon.com"])
+        self.assertEqual(app["segmentGroupId"], s.store["segmentGroup"][0]["id"])
+        self.assertEqual(app["serverGroups"], [{"id": s.store["serverGroup"][0]["id"]}])
+        self.assertEqual(s.store["serverGroup"][0]["appConnectorGroups"], [{"id": "500"}])
+        rule = s.store["rule"][0]
+        self.assertEqual(rule["conditions"][0]["operands"][0], {"objectType": "APP", "values": [app["id"]]})
+        self.assertTrue(any("/v2/" in c[1] and c[0] == "POST" for c in s.calls))   # access rules use the v2 API
+        self.assertFalse(zpa_quick.setup(z, "eu-west-1", "500", apply=True, log=lambda m: None))   # idempotent
+        self.assertTrue(all(i["exists"] for i in zpa_quick.status(z)))
+        self.assertTrue(zpa_quick.teardown(z, apply=True, log=lambda m: None))
+        self.assertEqual(sum(len(v) for v in s.store.values()), 0)
+
+    def test_bad_customer_id(self):
+        import zpa_quick
+        with self.assertRaises(zpa_quick.ZpaError):
+            zpa_quick.ZPA(FakeZpaSession(), "not-a-number")
 
 
 class McpTests(unittest.TestCase):

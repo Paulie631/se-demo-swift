@@ -112,7 +112,17 @@ body.present .notes,body.present .presenter{display:none}
     </div>
     <div class="panel">
       <h2>2 · Demo policy in ZIA</h2>
-      <p>Creates a custom URL category for Quick's domains, a <b>Caution</b> rule (usage-policy coaching page) and a <b>Block</b> Web DLP rule (PCI / PII / GLBA), then activates.</p>
+      <p>Creates a custom URL category for Quick's domains, an <b>SSL inspection</b> rule that decrypts it, a <b>Caution</b> rule (usage-policy coaching page) and a <b>Block</b> Web DLP rule (PCI / PII / GLBA), then activates.</p>
+      <div class="field" style="margin-top:6px"><span class="lbl">Scope it to a test user (recommended: the rules then affect no one else) · <span id="scope" class="pill warn">everyone</span></span>
+        <div class="row"><input type="text" id="uemail" placeholder="quick-demo@yourdemotenant.com" style="flex:1;min-width:200px"></div>
+        <div class="row" style="margin-top:6px">
+          <button id="ufind">Use existing user</button><button id="ucreate">Create test user</button><button id="uclear">Clear</button>
+          <button id="upw" style="display:none">Show password</button>
+        </div>
+        <span class="hint" id="upwout"></span>
+        <span class="hint">Create works on tenants whose users live in ZIA's hosted database. With an IdP or ZIdentity, create the user there and use it here. Sign in to Client Connector on the demo machine as this user.</span>
+      </div>
+      <label class="check" style="margin:4px 0 10px"><input type="checkbox" id="sslrule" checked> Include the SSL inspection rule (DLP can't see prompts without it)</label>
       <div class="row">
         <button id="status">Check status</button>
         <button id="preview">Preview changes</button>
@@ -126,13 +136,28 @@ body.present .notes,body.present .presenter{display:none}
     <div class="panel">
       <h2>3 · By hand, once</h2>
       <ol class="steps">
-        <li>Turn on <b>SSL inspection</b> for the <code>Amazon Quick (Demo)</code> category. Without it, DLP can't see prompts.</li>
+        <li><b>SSL inspection:</b> the kit adds its decrypt rule at the top. Make sure the demo machine trusts the Zscaler root certificate (Client Connector installs it when the app profile says so).</li>
         <li>Edit the Caution notification text so it's Quick-specific (Administration › End User Notifications).</li>
         <li>Optional: set up an <b>Incident Receiver</b> so DLP incidents show evidence.</li>
         <li>Demo laptop: Client Connector in tunnel mode, signed in as the demo user.</li>
         <li>Check the Cloud App catalog for "Amazon Quick". If it's listed, Cloud App Control works too.</li>
       </ol>
       <details><summary class="hint">Domains in the URL category</summary><pre class="out" id="urls"></pre></details>
+    </div>
+    <div class="panel">
+      <h2>4 · ZPA (optional: Quick only through ZPA)</h2>
+      <p>For the AWS stack's ZPA path. Creates a segment group, a server group on your App Connector group, an application segment for <code id="zpadom">us-east-1.quicksight.aws.amazon.com</code> (TCP 443) and an access rule allowing it from Client Connector.</p>
+      <div class="field"><span class="lbl">ZPA customer (tenant) ID, a long number shown on ZPA's API Keys page</span><input type="text" id="zpacid" placeholder="216196257331281920"></div>
+      <div class="row"><button id="zpaload">Save &amp; load connector groups</button></div>
+      <div class="field" style="margin-top:10px"><span class="lbl">App Connector group (the one the stack's connector enrolls into: its provisioning key goes in the AWS template)</span><select id="zpagrp"><option value="">Load connector groups first</option></select></div>
+      <div class="row">
+        <button id="zpastatus">Check status</button><button id="zpaprev">Preview</button>
+        <button class="primary" id="zpaapply">Create</button><button class="danger" id="zpadel">Remove</button>
+      </div>
+      <p class="hint" style="margin-top:8px">The region comes from the AWS environment tab. The API client needs a ZPA role. New access rules go to the bottom of the policy, so move this one above any broad deny rule.</p>
+      <table id="zpatable" style="margin-top:12px;display:none"><thead><tr><th>Object</th><th>Type</th><th>State</th></tr></thead><tbody></tbody></table>
+      <pre class="out" id="zpaout" style="display:none"></pre>
+      <div class="err" id="zpaerr"></div>
     </div>
   </div>
 </div></section>
@@ -283,6 +308,9 @@ async function loadCfg(){
   const cs=CFG.cloudshare||{};$("#csid").value=cs.api_id||"";$("#csrepo").value=cs.repo||"";$("#csref").value=cs.ref||"";
   $("#cskeystate").textContent=CFG.cs_has_key?"saved in keychain":"not saved";$("#cskeystate").className="pill "+(CFG.cs_has_key?"ok":"");
   setSrc(CFG.traffic_source||"laptop");
+  showScope();$("#sslrule").checked=CFG.ssl!==false;
+  const zp=CFG.zpa||{};$("#zpacid").value=zp.customer_id||"";$("#zpadom").textContent=`${(CFG.aws||{}).region||"us-east-1"}.quicksight.aws.amazon.com`;
+  if(zp.customer_id&&CFG.has_secret&&!loadCfg.zpaLoaded){loadCfg.zpaLoaded=true;zpaGroups(true).catch(()=>{})}
   if(cs.api_id&&CFG.cs_has_key&&!loadCfg.csLoaded){loadCfg.csLoaded=true;csLoadEnvs(true).catch(err=>$("#cserr").textContent=err.message)}
 }
 $("#save").onclick=e=>busy(e.target,async()=>{
@@ -302,12 +330,45 @@ $("#status").onclick=e=>busy(e.target,async()=>{
 });
 const ziaRun=(apply,teardown)=>async e=>{
   if(apply&&teardown&&!confirm("Delete the kit's demo URL category and rules from ZIA and activate?"))return;
-  if(apply&&!teardown&&!confirm("Create the demo policy in ZIA and activate it now?"))return;
+  if(apply&&!teardown&&!confirm(`Create the demo policy in ZIA${CFG.zia_user?" for "+CFG.zia_user.email:" for EVERYONE in the tenant (no test user picked)"} and activate it now?`))return;
   await busy(e.target,async()=>{$("#ziaerr").textContent="";
     try{const r=await api("/api/zia/run",{apply,teardown});showOut(r.output||"(no output)");if(apply)$("#status").click()}
     catch(err){$("#ziaerr").textContent=err.message}});
 };
 $("#preview").onclick=ziaRun(false,false);$("#apply").onclick=ziaRun(true,false);$("#teardown").onclick=ziaRun(true,true);
+
+// ---------------- test user, SSL rule
+function showScope(){const u=CFG.zia_user;const s=$("#scope");
+  s.textContent=u?u.email+(u.created?" (created by the kit)":""):"everyone";s.className="pill "+(u?"ok":"warn");
+  if(u)$("#uemail").value=u.email;$("#upw").style.display=CFG.has_user_pw&&u&&u.created?"":"none"}
+const uDo=action=>e=>busy(e.target,async()=>{$("#ziaerr").textContent="";$("#upwout").textContent="";
+  if(action==="create"&&!confirm(`Create ZIA user ${$("#uemail").value} with a random password (saved in your keychain) and activate?`))return;
+  try{await api("/api/zia/user",{action,email:$("#uemail").value});await loadCfg();if(action!=="clear")$("#status").click()}
+  catch(err){$("#ziaerr").textContent=err.message}});
+$("#ufind").onclick=uDo("find");$("#ucreate").onclick=uDo("create");$("#uclear").onclick=uDo("clear");
+$("#upw").onclick=async()=>{try{const r=await api("/api/zia/password");$("#upwout").innerHTML=`Password: <code>${esc(r.password)}</code> <button id="upwcopy">Copy</button>`;
+  $("#upwcopy").onclick=()=>navigator.clipboard.writeText(r.password);setTimeout(()=>$("#upwout").textContent="",60000)}catch(err){$("#ziaerr").textContent=err.message}};
+$("#sslrule").onchange=e=>api("/api/config",{ssl:e.target.checked}).catch(()=>{});
+
+// ---------------- ZPA
+function zpaShow(t){const o=$("#zpaout");o.style.display="";o.textContent=t}
+async function zpaGroups(keep){const {groups}=await api("/api/zpa/groups");
+  $("#zpagrp").innerHTML='<option value="">Choose a connector group</option>'+groups.map(g=>`<option value="${esc(g.id)}">${esc(g.name)} · ${g.connectors} connector(s)</option>`).join("");
+  if(keep&&CFG.zpa.connector_group_id)$("#zpagrp").value=CFG.zpa.connector_group_id}
+$("#zpaload").onclick=e=>busy(e.target,async()=>{$("#zpaerr").textContent="";
+  try{await api("/api/config",{zpa:{customer_id:$("#zpacid").value}});await loadCfg();await zpaGroups(true)}catch(err){$("#zpaerr").textContent=err.message}});
+$("#zpagrp").onchange=()=>{const o=$("#zpagrp").selectedOptions[0];api("/api/config",{zpa:{connector_group_id:$("#zpagrp").value,connector_group_name:o?o.textContent.replace(/ ·.*$/,""):""}}).then(loadCfg).catch(()=>{})};
+$("#zpastatus").onclick=e=>busy(e.target,async()=>{$("#zpaerr").textContent="";
+  try{const r=await api("/api/zpa/status");const tb=$("#zpatable");tb.style.display="";
+    tb.querySelector("tbody").innerHTML=r.items.map(i=>`<tr><td>${esc(i.name)}</td><td>${esc(i.type)}</td><td>${i.exists?`<span class="pill ok">present</span> <span class="hint">${esc(i.detail)}</span>`:'<span class="pill">missing</span>'}</td></tr>`).join("")}
+  catch(err){$("#zpaerr").textContent=err.message}});
+const zpaRun=(apply,teardown)=>async e=>{
+  if(apply&&teardown&&!confirm("Delete the kit's ZPA access rule, application segment, server group and segment group?"))return;
+  if(apply&&!teardown&&!confirm("Create the ZPA objects for Amazon Quick now?"))return;
+  await busy(e.target,async()=>{$("#zpaerr").textContent="";
+    try{const r=await api("/api/zpa/run",{apply,teardown});zpaShow(r.output||"(no output)");if(apply)$("#zpastatus").click()}
+    catch(err){$("#zpaerr").textContent=err.message}})};
+$("#zpaprev").onclick=zpaRun(false,false);$("#zpaapply").onclick=zpaRun(true,false);$("#zpadel").onclick=zpaRun(true,true);
 
 // ---------------- traffic
 let SRC="laptop";
@@ -374,7 +435,7 @@ $("#cscheck").onclick=csDo("check","Checking the VM");$("#cssched").onclick=csDo
 $("#zpa").onchange=e=>$("#zpaopts").style.display=e.target.checked?"":"none";
 function awsParams(){return{project:$("#proj").value,region:$("#awsregion").value,zpa:$("#zpa").checked,ami:$("#ami").value,instance_type:$("#itype").value,keypair:$("#keypair").value}}
 function cfnLink(){const r=$("#awsregion").value||"us-east-1";$("#cfnlink").href=`https://${r}.console.aws.amazon.com/cloudformation/home?region=${r}#/stacks/create`}
-$("#awsregion").onchange=cfnLink;
+$("#awsregion").onchange=()=>{cfnLink();api("/api/config",{aws:awsParams()}).then(loadCfg).catch(()=>{})};
 $("#dl").onclick=e=>busy(e.target,async()=>{
   $("#awserr").textContent="";const p=awsParams();
   if(p.zpa&&!p.ami){$("#awserr").textContent="The ZPA path needs the App Connector AMI ID for this region.";return}
