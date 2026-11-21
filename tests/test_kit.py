@@ -570,5 +570,128 @@ class SeedReplyTests(unittest.TestCase):
         self.assertNotIn("cfnresponse", (ROOT / "aws" / "src" / "seed.py").read_text())
 
 
+class NotFound(Exception):
+    pass
+NotFound.__name__ = "ResourceNotFoundException"
+
+
+class FakeQS:
+    """Amazon Quick (quicksight) API stand-in: data source -> knowledge base -> space."""
+    def __init__(self):
+        self.ds, self.kb, self.spaces, self.calls, self.polls = {}, {}, {}, [], 0
+
+    def describe_account_subscription(self, AwsAccountId):
+        return {"AccountInfo": {"AccountName": "paulaiuto-quick-demo", "Edition": "ENTERPRISE",
+                                "AccountSubscriptionStatus": "ACCOUNT_CREATED", "AuthenticationType": "IAM_AND_QUICKSIGHT"}}
+
+    def list_users(self, **kw):
+        return {"UserList": [{"Arn": "arn:aws:quicksight:us-east-1:123456789012:user/default/reader", "UserName": "reader", "Role": "READER"},
+                             {"Arn": "arn:aws:quicksight:us-east-1:123456789012:user/default/paul", "UserName": "paul", "Role": "ADMIN"}]}
+
+    def create_data_source(self, **kw):
+        self.calls.append(("create_data_source", kw))
+        self.ds[kw["DataSourceId"]] = {"Arn": "arn:ds", "Status": "CREATION_IN_PROGRESS"}
+        return {"Arn": "arn:ds"}
+
+    def describe_data_source(self, AwsAccountId, DataSourceId):
+        d = self.ds.get(DataSourceId)
+        if not d:
+            raise NotFound("ResourceNotFoundException: no data source")
+        out = dict(d); d["Status"] = "CREATION_SUCCESSFUL"
+        return {"DataSource": out}
+
+    def create_knowledge_base(self, **kw):
+        self.calls.append(("create_knowledge_base", kw))
+        self.kb[kw["KnowledgeBaseId"]] = {"KnowledgeBaseArn": "arn:kb", "Status": "CREATING", "PrimaryOwnerUsername": "paul"}
+        return {"KnowledgeBaseArn": "arn:kb"}
+
+    def describe_knowledge_base(self, AwsAccountId, KnowledgeBaseId):
+        k = self.kb.get(KnowledgeBaseId)
+        if not k:
+            raise NotFound("ResourceNotFoundException: no kb")
+        self.polls += 1
+        if self.polls > 2:
+            k.update(Status="ACTIVE", DocumentCount=7, LatestIngestionSummary={"Status": "SUCCEEDED"})
+        return {"KnowledgeBase": dict(k)}
+
+    def describe_space(self, AwsAccountId, SpaceId):
+        s = self.spaces.get(SpaceId)
+        if not s:
+            raise NotFound("ResourceNotFoundException: no space")
+        return {"spaceArn": "arn:space", "Space": {"resources": list(s)}}
+
+    def create_space(self, **kw):
+        self.calls.append(("create_space", kw)); self.spaces[kw["SpaceId"]] = []
+        return {"spaceArn": "arn:space"}
+
+    def update_space_resources(self, **kw):
+        self.calls.append(("update_space_resources", kw))
+        self.spaces[kw["SpaceId"]] += [r["ResourceDetails"] for r in kw["AddResources"]]
+
+    def update_space_permissions(self, **kw):
+        self.calls.append(("update_space_permissions", kw))
+
+    def delete_space(self, AwsAccountId, SpaceId):
+        self.spaces.pop(SpaceId)
+
+    def delete_knowledge_base(self, AwsAccountId, KnowledgeBaseId):
+        self.kb.pop(KnowledgeBaseId)
+
+    def delete_data_source(self, AwsAccountId, DataSourceId):
+        self.ds.pop(DataSourceId)
+
+
+class QuickSetupTests(unittest.TestCase):
+    def setUp(self):
+        import quick_setup
+        self.q = quick_setup
+        self._sleep = quick_setup.time.sleep
+        quick_setup.time.sleep = lambda s: None
+        self.qs = FakeQS()
+        self.sess = types.SimpleNamespace(client=lambda n: self.qs)
+
+    def tearDown(self):
+        self.q.time.sleep = self._sleep
+
+    def test_full_setup_idempotent_and_teardown(self):
+        q, acct = self.q, "123456789012"
+        owner = "arn:aws:quicksight:us-east-1:123456789012:user/default/paul"
+        self.assertEqual(q.users(self.sess, acct)[0]["name"], "paul")          # admins first
+        r = q.setup(self.sess, acct, "zs-quick-demo", "zs-quick-demo-data-123-us-east-1",
+                    "arn:aws:iam::123456789012:role/QuickKbRole", owner, True, progress=lambda m: None)
+        self.assertEqual((r["knowledge_base"], r["documents"]), ("arn:kb", 7))
+        ds = dict(self.qs.calls)["create_data_source"]
+        self.assertEqual(ds["Type"], "S3_KNOWLEDGE_BASE")
+        self.assertEqual(ds["DataSourceParameters"]["S3KnowledgeBaseParameters"],
+                         {"BucketUrl": "s3://zs-quick-demo-data-123-us-east-1/", "RoleArn": "arn:aws:iam::123456789012:role/QuickKbRole"})
+        self.assertEqual(ds["Permissions"][0]["Principal"], owner)
+        kb = dict(self.qs.calls)["create_knowledge_base"]
+        self.assertEqual(kb["PrimaryOwnerArn"], owner)
+        self.assertEqual(kb["KnowledgeBaseConfiguration"]["templateConfiguration"]["template"],
+                         {"type": "S3V2", "connectionConfiguration": {"bucketName": "zs-quick-demo-data-123-us-east-1",
+                                                                      "bucketOwnerAccountId": acct}})
+        self.assertEqual(self.qs.spaces["zs-quick-demo-space"], [{"resourceArn": "arn:kb"}])
+        n = len(self.qs.calls)
+        q.setup(self.sess, acct, "zs-quick-demo", "b", "", owner, True, progress=lambda m: None)   # second run
+        self.assertNotIn("create_data_source", [c[0] for c in self.qs.calls[n:]])
+        self.assertNotIn("update_space_resources", [c[0] for c in self.qs.calls[n:]])
+        st = q.status(self.sess, acct, "zs-quick-demo")
+        self.assertEqual(st["knowledge_base"]["status"], "ACTIVE")
+        q.teardown(self.sess, acct, "zs-quick-demo", progress=lambda m: None)
+        self.assertEqual((self.qs.ds, self.qs.kb, self.qs.spaces), ({}, {}, {}))
+
+    def test_requires_bucket_and_owner(self):
+        with self.assertRaises(self.q.QuickError):
+            self.q.setup(self.sess, "1", "p", "", "", "arn:owner")
+        with self.assertRaises(self.q.QuickError):
+            self.q.setup(self.sess, "1", "p", "bucket", "", "")
+
+    def test_template_has_quick_role(self):
+        body = qk.build_template({"project": "zs-quick-demo"})
+        self.assertIn("QuickKbRole:", body)
+        self.assertIn("Service: quicksight.amazonaws.com", body)
+        self.assertIn("QuickKbRoleArn:", body)
+
+
 if __name__ == "__main__":
     unittest.main()

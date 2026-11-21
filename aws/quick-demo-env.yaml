@@ -105,6 +105,31 @@ Resources:
             Resource: [!GetAtt DataBucket.Arn, !Sub '${DataBucket.Arn}/*']
             Condition: {Bool: {'aws:SecureTransport': 'false'}}
 
+  QuickKbRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Lets Amazon Quick read the demo bucket for the S3 knowledge base (used by the kit's Quick setup)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: quicksight.amazonaws.com}
+            Action: 'sts:AssumeRole'
+            Condition: {StringEquals: {'aws:SourceAccount': !Ref 'AWS::AccountId'}}
+      Policies:
+        - PolicyName: read-demo-bucket
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['s3:ListBucket', 's3:GetBucketLocation']
+                Resource: !GetAtt DataBucket.Arn
+              - Effect: Allow
+                Action: ['s3:GetObject', 's3:GetObjectVersion']
+                Resource: !Sub '${DataBucket.Arn}/*'
+      Tags:
+        - {Key: Purpose, Value: zscaler-quick-demo}
+
   SeedRole:
     Type: AWS::IAM::Role
     Properties:
@@ -434,8 +459,11 @@ Outputs:
     Value: !Ref DataBucket
   KnowledgeBaseS3Uri:
     Value: !Sub 's3://${DataBucket}/'
+  QuickKbRoleArn:
+    Description: IAM role Amazon Quick assumes to read the bucket (the kit's Quick setup uses it for the S3 knowledge base).
+    Value: !GetAtt QuickKbRole.Arn
   McpServerUrl:
-    Description: Paste into Quick > Integrations > MCP (service auth None, or custom header if McpToken set).
+    Description: Quick console > Connectors > Create for your team > Model Context Protocol (MCP), authentication None.
     Value: !GetAtt McpUrl.FunctionUrl
   McpLogGroup:
     Description: Every MCP request Quick sends is logged here (useful to prove what the agent did).

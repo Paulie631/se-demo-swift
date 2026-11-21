@@ -273,6 +273,19 @@ body.present .notes,body.present .presenter{display:none}
       <div class="row"><h2 style="margin:0">2 · Wire it to Amazon Quick</h2><span class="sp" style="flex:1"></span><span class="hint" id="wireprog"></span></div>
       <p class="hint" style="margin:8px 0 10px">Tick each step as you go (saved in this browser). Values fill in from your stack after <b>Deploy stack</b>. Some Quick versions call <b>Connectors</b> "Integrations".</p>
       <div class="row" style="margin-bottom:10px"><a id="quicklink" target="_blank" rel="noopener">Open Amazon Quick ↗</a><button id="wirereset" style="font-size:12px;padding:3px 9px">Reset checklist</button></div>
+      <div class="wsec" style="border-top:0;padding-top:0">
+        <h4>Automatic setup (Quick API)</h4>
+        <p class="hint" style="margin:0 0 8px">Creates the S3 knowledge base on your stack's bucket (Quick reads it through the stack's role, so step A isn't needed) and a demo Space containing it. The MCP connector (step C) has no API yet, so do that one by hand.</p>
+        <div class="row"><button id="qcheck">Check Quick</button><span id="qacct" class="hint"></span></div>
+        <div id="qform" style="display:none;margin-top:8px">
+          <div class="field"><span class="lbl">Quick user who owns the knowledge base (the one you'll demo as)</span><select id="qowner"></select></div>
+          <label class="check"><input type="checkbox" id="qspace" checked> Also create a Space "Amazon Quick demo" with the knowledge base</label>
+          <div class="row" style="margin-top:8px"><button class="primary" id="qsetup">Set up knowledge base</button><button class="danger" id="qdel">Remove</button></div>
+        </div>
+        <pre class="out" id="qlog" style="display:none"></pre>
+        <div id="qres"></div>
+        <div class="err" id="qerr"></div>
+      </div>
       <div id="wire"></div>
     </div>
     <div class="panel">
@@ -464,11 +477,11 @@ $("#cscheck").onclick=csDo("check","Checking the VM");$("#cssched").onclick=csDo
 const WIRE=o=>{const b=o.DataBucketName||"(deploy the stack first)",s3=o.KnowledgeBaseS3Uri||(o.DataBucketName?`s3://${o.DataBucketName}/`:"(deploy the stack first)"),m=o.McpServerUrl||"(deploy the stack first)";
  const v=x=>`<div class="val"><code>${esc(x)}</code>${x.startsWith("(")?"":`<button data-cp="${esc(x)}">Copy</button>`}</div>`;
  return [
- {h:"A · Let Quick read the demo bucket (Quick admin, once)",s:[
+ {h:"A · Let Quick read the demo bucket (automatic with Set up knowledge base; by hand otherwise)",s:[
   ["a1","Quick admin console › <b>Permissions</b> › <b>AWS resources</b>."],
   ["a2","Under <b>Allow access and autodiscovery for these resources</b>, tick <b>Amazon S3</b>, then <b>Select S3 buckets</b>."],
   ["a3","On <b>S3 Buckets Linked To Quick Account</b>, tick this bucket, then <b>Finish</b>:"+v(b)]]},
- {h:"B · Create the S3 knowledge base",s:[
+ {h:"B · Create the S3 knowledge base (automatic with Set up knowledge base)",s:[
   ["b1","Quick console › <b>Integrations</b> (or <b>Connectors</b>) › under <b>Amazon S3</b>, choose <b>+</b>."],
   ["b2","Bucket location: <b>this Quick account</b>. Bucket URL (same Region as Quick):"+v(s3)],
   ["b3","<b>Next</b>, name it (e.g. <i>Demo company files</i>), <b>Create</b>. Wait until it shows <b>Available</b> instead of Syncing."],
@@ -501,6 +514,30 @@ function renderWire(o){
   const r=(CFG.aws||{}).region||"us-east-1";$("#quicklink").href=`https://${r}.quicksight.aws.amazon.com/`;
 }
 $("#wirereset").onclick=()=>{if(confirm("Untick every step in the checklist?")){try{localStorage.removeItem(wireKey())}catch(e){};renderWire()}};
+
+
+// ---------------- Quick API setup
+function qShowRes(r){if(!r){$("#qres").innerHTML="";return}
+  const row=(n,v,ok)=>`<tr><td>${n}</td><td>${v?`<span class="pill ${ok?"ok":"warn"}">${esc(v)}</span>`:'<span class="pill">not created</span>'}</td></tr>`;
+  const kb=r.knowledge_base;
+  $("#qres").innerHTML=`<table style="margin-top:10px"><tbody>${row("S3 data source",r.data_source&&r.data_source.status,r.data_source&&/SUCCESS/.test(r.data_source.status))}
+   ${row("Knowledge base",kb&&(kb.status+(kb.docs?` · ${kb.docs} docs`:"")),kb&&kb.status==="ACTIVE")}${row("Space",r.space&&`${r.space.resources} resource(s)`,r.space&&r.space.resources)}</tbody></table>`;
+  if(kb&&kb.status==="ACTIVE"){const s=wireState();["a1","a2","a3","b1","b2","b3"].forEach(k=>s[k]=true);if(r.space&&r.space.resources)s.b4=true;try{localStorage.setItem(wireKey(),JSON.stringify(s))}catch(e){};renderWire()}}
+$("#qcheck").onclick=e=>busy(e.target,async()=>{$("#qerr").textContent="";$("#qacct").textContent="";
+  try{await saveAws();const r=await api("/api/quick/status");
+    if(!r.quick){$("#qacct").innerHTML=`<span class="pill warn">No Quick account in ${esc(r.account_id)}</span> Sign up first (Enterprise, ${esc(r.region)}).`;$("#qform").style.display="none";return}
+    $("#qacct").innerHTML=`<span class="pill ok">${esc(r.quick.name)} · ${esc(r.quick.edition)}</span> ${esc(r.quick.status||"")}`;
+    $("#qowner").innerHTML=r.users.length?r.users.map(u=>`<option value="${esc(u.arn)}">${esc(u.name)}${u.role?" · "+esc(u.role):""}</option>`).join(""):'<option value="">No Quick users yet: sign in to Quick once first</option>';
+    if(r.owner)$("#qowner").value=r.owner;$("#qform").style.display="";
+    if(!r.has_stack_outputs)$("#qerr").textContent="Deploy the AWS stack first: the knowledge base reads its bucket.";
+    qShowRes(r.resources)}catch(err){$("#qerr").textContent=err.message}});
+async function qJob(path,body){const L=$("#qlog");L.style.display="";L.textContent="Starting…";const {job}=await api(path,body);
+  for(;;){await sleep(3000);const j=await api("/api/jobs?id="+job);L.textContent=(j.log||[]).join("\n")+`\n… ${j.elapsed||0}s`;L.scrollTop=L.scrollHeight;
+    if(j.state==="done")return j.result;if(j.state==="error")throw new Error(j.error)}}
+$("#qsetup").onclick=e=>busy(e.target,async()=>{$("#qerr").textContent="";if(!$("#qowner").value){$("#qerr").textContent="Pick the Quick user first.";return}
+  try{await qJob("/api/quick/setup",{owner_arn:$("#qowner").value,space:$("#qspace").checked});$("#qlog").textContent+="\nDone.";$("#qcheck").click()}catch(err){$("#qerr").textContent=err.message}});
+$("#qdel").onclick=e=>{if(!confirm("Delete the demo knowledge base, its data source and the demo Space from Quick?"))return;
+  busy(e.target,async()=>{$("#qerr").textContent="";try{await qJob("/api/quick/teardown",{});$("#qlog").textContent+="\nRemoved.";qShowRes(null)}catch(err){$("#qerr").textContent=err.message}})};
 
 // ---------------- AWS deploy
 let AWSAUTH="profile";

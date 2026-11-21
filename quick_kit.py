@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10,<3.15"
-# dependencies = ["requests>=2.31", "keyring>=24", "truststore>=0.9", "boto3>=1.34"]
+# dependencies = ["requests>=2.31", "keyring>=24", "truststore>=0.9", "boto3>=1.43"]
 # ///
 """Amazon Quick x Zscaler SE demo kit.
 
@@ -50,10 +50,11 @@ import cs_runner  # noqa: E402
 import quick_traffic  # noqa: E402
 import zia_quick_setup as zqs  # noqa: E402
 import aws_deploy  # noqa: E402
+import quick_setup  # noqa: E402
 import updater  # noqa: E402
 import zpa_quick  # noqa: E402
 
-VERSION = "0.4.4"
+VERSION = "0.5.0"
 HOME = pathlib.Path(os.environ.get("QUICK_KIT_HOME", pathlib.Path.home() / ".quick-se-kit"))
 CFG_FILE = HOME / "config.json"
 LOG_FILE = HOME / "kit.log"
@@ -329,7 +330,7 @@ def start_job(fn) -> str:
     def work():
         try:
             JOBS[jid].update(state="done", result=fn(progress))
-        except (cs_runner.CloudShareError, zqs.ZiaError, aws_deploy.AwsError, ValueError) as e:
+        except (cs_runner.CloudShareError, zqs.ZiaError, aws_deploy.AwsError, quick_setup.QuickError, ValueError) as e:
             log(str(e), "error")
             JOBS[jid].update(state="error", error=str(e))
         except Exception as e:
@@ -392,9 +393,65 @@ def aws_deploy_stack(cfg: dict, mcp_token: str = "", zpa_key: str = "", progress
     return st
 
 
+def quick_status(cfg: dict) -> dict:
+    a = aws_cfg(cfg)
+    s = aws_sess(cfg)
+    acct = aws_deploy.whoami(s)["account"]
+    info = quick_setup.account(s, acct)
+    out = {"account_id": acct, "region": a["region"], "quick": info, "users": [], "resources": None,
+           "owner": a.get("quick_owner", ""), "has_stack_outputs": bool((a.get("outputs") or {}).get("DataBucketName"))}
+    if info:
+        out["users"] = quick_setup.users(s, acct)
+        out["resources"] = quick_setup.status(s, acct, a["project"])
+    return out
+
+
+def quick_run(cfg: dict, owner_arn: str, space: bool = True, progress=None) -> dict:
+    a = aws_cfg(cfg)
+    s = aws_sess(cfg)
+    acct = aws_deploy.whoami(s)["account"]
+    if not quick_setup.account(s, acct):
+        raise quick_setup.QuickError("There's no Amazon Quick account in this AWS account yet. Sign up in the Quick "
+                                     "console first (Enterprise, same region as the stack).")
+    st = aws_deploy.stack(s, a["project"])
+    o = (st or {}).get("outputs") or {}
+    if not o.get("DataBucketName"):
+        raise quick_setup.QuickError("Deploy the AWS stack first: the knowledge base reads its bucket.")
+    if not o.get("QuickKbRoleArn") and progress:
+        progress("This stack has no QuickKbRole (deployed before v0.5). Redeploy the stack, or grant Quick the bucket "
+                 "under Permissions > AWS resources first.")
+    c = load_cfg()
+    c.setdefault("aws", {})["quick_owner"] = owner_arn
+    save_cfg(c)
+    log(f"Quick setup: knowledge base on {o['DataBucketName']} for {owner_arn.split('/')[-1]}", "action")
+    r = quick_setup.setup(s, acct, a["project"], o["DataBucketName"], o.get("QuickKbRoleArn", ""), owner_arn,
+                          space, progress or (lambda m: None))
+    log(f"Quick setup done: {r.get('documents') or 0} documents indexed", "ok")
+    return r
+
+
+def quick_teardown(cfg: dict, progress=None) -> dict:
+    a = aws_cfg(cfg)
+    s = aws_sess(cfg)
+    acct = aws_deploy.whoami(s)["account"]
+    if quick_setup.account(s, acct):
+        quick_setup.teardown(s, acct, a["project"], progress or (lambda m: None))
+    log("Quick setup removed", "ok")
+    return {"ok": True}
+
+
 def aws_delete_stack(cfg: dict, progress=None) -> dict:
     a = aws_cfg(cfg)
     s = aws_sess(cfg)
+    try:   # remove the Quick knowledge base first, so nothing in Quick points at the deleted bucket
+        acct = aws_deploy.whoami(s)["account"]
+        if quick_setup.account(s, acct) and any((quick_setup.status(s, acct, a["project"]) or {}).values()):
+            if progress:
+                progress("Removing the Quick knowledge base and space first…")
+            quick_setup.teardown(s, acct, a["project"], progress or (lambda m: None))
+    except Exception as e:
+        if progress:
+            progress(f"Skipped Quick cleanup ({e}); remove the knowledge base in Quick yourself.")
     log(f"AWS: deleting stack {a['project']} in {a['region']}", "action")
     r = aws_deploy.delete(s, a["project"], progress)
     c = load_cfg()
@@ -571,7 +628,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
             try:
                 return self._send(200, fn())
             except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, updater.UpdateError,
-                    aws_deploy.AwsError, ValueError) as e:
+                    aws_deploy.AwsError, quick_setup.QuickError, ValueError) as e:
                 log(str(e), "error")
                 return self._send(400, {"error": str(e)})
             except Exception as e:  # unexpected: show it, keep the console alive
@@ -618,6 +675,8 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
             if path == "/api/aws/profiles":
                 return self._send(200, {"profiles": aws_deploy.profiles(),
                                         "has_secret": bool(get_secret("aws_secret_access_key"))})
+            if path == "/api/quick/status":
+                return self._do(lambda: quick_status(load_cfg()))
             if path == "/api/aws/status":
                 return self._do(lambda: aws_status(load_cfg()))
             if path == "/api/update/check":
@@ -705,6 +764,14 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                                                        int(b.get("loops") or 1), b.get("region") or "",
                                                        int(b.get("every") or 60), prog))
                 return self._send(200, {"job": jid})
+            if path in ("/api/quick/setup", "/api/quick/teardown"):
+                c = load_cfg()
+                if path == "/api/quick/setup":
+                    owner, sp = b.get("owner_arn", ""), b.get("space", True)
+                    jid = start_job(lambda prog: quick_run(c, owner, sp, prog))
+                else:
+                    jid = start_job(lambda prog: quick_teardown(c, prog))
+                return self._send(200, {"job": jid})
             if path in ("/api/aws/deploy", "/api/aws/delete"):
                 c = load_cfg()
                 if path == "/api/aws/deploy":
@@ -769,7 +836,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
 
 
 # ----------------------------------------------------------------------------- install / uninstall
-APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "zpa_quick.py", "updater.py", "aws_deploy.py", "CHANGELOG.md", "quick_traffic.py", "cs_runner.py", "cloudshare/run.ps1", "gui.html", "quick-kit", "quick-kit.cmd",
+APP_FILES = ["quick_kit.py", "zia_quick_setup.py", "zpa_quick.py", "updater.py", "aws_deploy.py", "quick_setup.py", "CHANGELOG.md", "quick_traffic.py", "cs_runner.py", "cloudshare/run.ps1", "gui.html", "quick-kit", "quick-kit.cmd",
              "README.md", "aws/quick-demo-env.yaml", "aws/README.md"]
 WINDOWS = os.name == "nt"
 SHORTCUT = "Amazon Quick Demo Console"
@@ -863,7 +930,8 @@ def main(argv=None) -> None:
     tp.add_argument("--zpa", action="store_true")
     tp.add_argument("--ami", default="")
     aw = sub.add_parser("aws", help="deploy / inspect / delete the demo CloudFormation stack (settings from the console)")
-    aw.add_argument("action", choices=["deploy", "status", "delete"])
+    aw.add_argument("action", choices=["deploy", "status", "delete", "quick-setup", "quick-teardown"])
+    aw.add_argument("--owner", help="Quick user ARN to own the knowledge base (quick-setup; default: saved or first admin)")
     aw.add_argument("--profile", help="AWS CLI profile (default: the one saved in the console, else default)")
     aw.add_argument("--region", choices=QUICK_REGIONS)
     up = sub.add_parser("update", help="update the kit from GitHub (--check: only check, --rollback: previous version)")
@@ -931,6 +999,13 @@ def main(argv=None) -> None:
                 st = aws_deploy_stack(cfg, tok, zk, progress=lambda m: print("  " + m))
                 for k, v in (st.get("outputs") or {}).items():
                     print(f"  {k}: {v}")
+            elif a.action == "quick-setup":
+                st = quick_status(cfg)
+                owner = a.owner or st["owner"] or (st["users"][0]["arn"] if st["users"] else "")
+                r = quick_run(cfg, owner, True, progress=lambda m: print("  " + m))
+                print(f"Knowledge base ready ({r.get('documents') or 0} documents).")
+            elif a.action == "quick-teardown":
+                quick_teardown(cfg, progress=lambda m: print("  " + m))
             else:
                 if input(f"Delete stack {aws_cfg(cfg)['project']}? Type yes: ").strip().lower() == "yes":
                     aws_delete_stack(cfg, progress=lambda m: print("  " + m))
@@ -956,7 +1031,7 @@ def main(argv=None) -> None:
                 print(f"  [{'✓' if st['ok'] else '✗'}] {st['step']:<32} {st.get('status')} {st.get('note', '')}")
             print("Tools:", ", ".join(r["tools"]) or "none")
     except (zqs.ZiaError, cs_runner.CloudShareError, zpa_quick.ZpaError, updater.UpdateError, aws_deploy.AwsError,
-            ValueError) as e:
+            quick_setup.QuickError, ValueError) as e:
         if getattr(a, "json", False):
             print(cs_runner.MARK + json.dumps({"ok": False, "error": str(e)}))
         sys.exit(str(e))

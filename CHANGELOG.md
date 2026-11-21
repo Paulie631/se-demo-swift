@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+- **Automatic Amazon Quick setup** (AWS tab › Wire it to Amazon Quick › Check Quick / Set up knowledge base): through the Quick API the kit creates the S3 data source, the knowledge base (owned by the Quick user you pick, waits for the first sync) and a demo Space containing it. **Remove** deletes them; **Delete stack** removes them first.
+- The stack now includes **QuickKbRole**, which Quick assumes to read the bucket, so the console's Permissions › AWS resources step isn't needed. Redeploy (Deploy stack updates in place) to add it.
+- Still manual: the MCP connector (the Quick API has no MCP connector type yet) and creating the Quick account itself (it's a paid subscription after the trial).
+- `./quick-kit aws quick-setup | quick-teardown` on the command line.
+
 ## 0.4.4
 - **Wire it to Amazon Quick** checklist on the AWS tab: step-by-step console instructions (bucket access, S3 knowledge base, MCP connector, optional ZPA, smoke-test prompts, cleanup) with your stack's bucket, S3 URL and MCP URL filled in and copy buttons. Ticks are saved in the browser.
 

@@ -28,7 +28,7 @@ Then, in the console:
 | **Setup** | Connect with OneAPI (secrets in the OS keychain). **ZIA:** a custom URL category for Quick's domains, an **SSL inspection** (decrypt) rule, a **Caution** coaching rule and a **Block** Web DLP rule (PCI / PII / GLBA), all optionally scoped to a **test user** the kit finds or creates. **ZPA (optional):** segment group, server group, an application segment for the Quick website and a Client Connector access rule, for the AWS stack's PrivateLink path. Check, preview, create or remove each. |
 | **Guided demo** | 1 Discover · 2 Govern access · 3 Protect data in prompts · 4 Agentic Quick (extension, desktop app, MCP) · 5 The data Quick can see (DSPM) · 6 Build-time assurance (AI-SPM, red teaming, prompt hardening). About 35 minutes. ← → to move. |
 | **Traffic** | Quick-shaped requests through Client Connector: visibility, PII/PCI/secrets prompts and a fake customer CSV upload, with a result per request (blocked, passed, or a TLS problem with its fix). Works without a Quick account. **Send from** this laptop or a **CloudShare VM**, with a VM check and an optional schedule to keep dashboards fresh. |
-| **AWS environment** | **Deploy stack / Delete stack** straight from the console with an AWS CLI profile (SSO works after `aws sso login`) or access keys (secret in the keychain), with live progress and the stack outputs filled in. Or download the template and upload it yourself. Secrets (MCP token, ZPA key) go to AWS as hidden parameters and are never saved. Also lists the steps to wire the stack into Quick and runs a live check of the MCP server. |
+| **AWS environment** | **Deploy stack / Delete stack** straight from the console with an AWS CLI profile (SSO works after `aws sso login`) or access keys (secret in the keychain), with live progress and the stack outputs filled in. Or download the template and upload it yourself. Secrets (MCP token, ZPA key) go to AWS as hidden parameters and are never saved. Then **Set up knowledge base** creates the S3 knowledge base and a demo Space through the Quick API (Quick reads the bucket through the stack's QuickKbRole). The checklist covers the one manual step (the MCP connector) and runs a live check of the MCP server. |
 | **Logs** | Everything the kit did (secrets never logged). Full file: `~/.quick-se-kit/kit.log`. |
 
 ## Command line
@@ -40,7 +40,7 @@ Then, in the console:
 ./quick-kit user find|create|clear EMAIL   scope the demo policy to a test user
 ./quick-kit zpa               ZPA objects for the PrivateLink path (--apply, --teardown)
 ./quick-kit traffic           demo traffic (--loops N, --only visibility|dlp|upload, --region, --via cloudshare)
-./quick-kit aws deploy|status|delete   the AWS demo stack (--profile, --region)
+./quick-kit aws deploy|status|delete|quick-setup|quick-teardown   AWS stack + Quick knowledge base (--profile, --region, --owner)
 ./quick-kit template          write the AWS template (--project, --zpa, --ami, --out)
 ./quick-kit mcp-test URL      check the deployed MCP server (--token)
 ./quick-kit install|uninstall desktop shortcut + ~/.quick-se-kit/app
