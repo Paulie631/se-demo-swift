@@ -120,24 +120,20 @@ body.present .notes,body.present .presenter{display:none}
     </div>
     <div class="panel">
       <h2>2 · Demo policy in ZIA</h2>
-      <p>Creates a custom URL category for Quick's domains, an <b>SSL inspection</b> rule that decrypts it, a <b>Caution</b> rule (usage-policy coaching page) and a <b>Block</b> Web DLP rule (PCI / PII / GLBA), then activates.</p>
-      <div class="field" style="margin-top:6px"><span class="lbl">Scope it to a test user (recommended: the rules then affect no one else) · <span id="scope" class="pill warn">everyone</span></span>
-        <div class="row"><input type="text" id="uemail" placeholder="quick-demo@yourdemotenant.com" style="flex:1;min-width:200px"></div>
-        <div class="row" style="margin-top:6px">
-          <button id="ufind">Use existing user</button><button id="ucreate">Create test user</button><button id="uclear">Clear</button>
-          <button id="upw" style="display:none">Show password</button>
-        </div>
-        <span class="hint" id="upwout"></span>
-        <span class="hint">Create works on tenants whose users live in ZIA's hosted database. With an IdP or ZIdentity, create the user there and use it here. Sign in to Client Connector on the demo machine as this user.</span>
+      <p>One click sets up everything the demo needs: a URL category for Quick, SSL inspection, a coaching page and a DLP block rule.</p>
+      <div class="field"><span class="lbl">Apply the rules to</span>
+        <select id="scopeSel"><option value="everyone">Everyone in this tenant</option><option value="user">One test user</option></select>
       </div>
-      <label class="check" style="margin:4px 0 10px"><input type="checkbox" id="sslrule" checked> Include the SSL inspection rule (DLP can't see prompts without it)</label>
-      <div class="row">
-        <button id="status">Check status</button>
-        <button id="preview">Preview changes</button>
-        <button class="primary" id="apply">Create &amp; activate</button>
-        <button class="danger" id="teardown">Remove demo policy</button>
+      <div id="userbox" style="display:none">
+        <div class="row"><input type="text" id="uemail" placeholder="Test user's email address" style="flex:1;min-width:200px"><button id="usave">Save user</button></div>
+        <p class="hint" style="margin:6px 0 0">Uses the user if it exists. If not, the kit offers to create it (tenants with ZIA-hosted users). Sign in to Client Connector on the demo machine as this user. <a href="#" id="upw" style="display:none">Show password</a> <span id="upwout"></span></p>
       </div>
-      <table id="stable" style="margin-top:12px;display:none"><thead><tr><th>Object</th><th>Type</th><th>State</th></tr></thead><tbody></tbody></table>
+      <div class="row" style="margin-top:12px"><button class="primary" id="apply">Set up ZIA policy</button><button class="danger" id="teardown">Remove</button><span class="hint" id="scope"></span></div>
+      <div id="stable" style="margin-top:12px"></div>
+      <details style="margin-top:10px"><summary class="hint">Advanced</summary>
+        <label class="check" style="margin:8px 0"><input type="checkbox" id="sslrule" checked> Include the SSL inspection rule (DLP can't see prompts without it)</label>
+        <div class="row"><button id="status">Refresh status</button><button id="preview">Preview changes</button></div>
+      </details>
       <pre class="out" id="ziaout" style="display:none"></pre>
       <div class="err" id="ziaerr"></div>
     </div>
@@ -348,6 +344,7 @@ async function loadCfg(){
   $("#cskeystate").textContent=CFG.cs_has_key?"saved in keychain":"not saved";$("#cskeystate").className="pill "+(CFG.cs_has_key?"ok":"");
   setSrc(CFG.traffic_source||"laptop");
   showScope();$("#sslrule").checked=CFG.ssl!==false;
+  if(CFG.has_secret&&CFG.vanity&&!loadCfg.ziaLoaded){loadCfg.ziaLoaded=true;ziaStatus(true)}
   setAuth(a.auth||"profile");$("#awskid").value=a.key_id||"";showOuts(a.outputs);
   if(!loadCfg.profLoaded){loadCfg.profLoaded=true;loadProfiles().catch(()=>{})}
   const zp=CFG.zpa||{};$("#zpacid").value=zp.customer_id||"";$("#zpadom").textContent=`${(CFG.aws||{}).region||"us-east-1"}.quicksight.aws.amazon.com`;
@@ -359,35 +356,40 @@ $("#save").onclick=e=>busy(e.target,async()=>{
   try{
     const r=await api("/api/config",{vanity:$("#vanity").value,client_id:$("#cid").value,secret:$("#sec").value,ca_bundle:$("#ca").value,engines:$("#engines").value.split(",")});
     $("#sec").value="";await loadCfg();
-    await api("/api/zia/test",{});$("#conn").innerHTML='<span class="pill ok">Connected</span>';
+    await api("/api/zia/test",{});$("#conn").innerHTML='<span class="pill ok">Connected</span>';ziaStatus(true);
   }catch(err){$("#conn").innerHTML='<span class="pill bad">Not connected</span>';$("#connerr").textContent=err.message}
 });
 function showOut(t){const o=$("#ziaout");o.style.display="";o.textContent=t}
-$("#status").onclick=e=>busy(e.target,async()=>{
-  $("#ziaerr").textContent="";
-  try{const r=await api("/api/zia/status");const tb=$("#stable");tb.style.display="";
-    tb.querySelector("tbody").innerHTML=r.items.map(i=>`<tr><td>${esc(i.name)}</td><td>${esc(i.type)}</td><td>${i.exists?`<span class="pill ok">present</span> <span class="hint">${esc(i.detail)}</span>`:'<span class="pill">missing</span>'}</td></tr>`).join("");
-  }catch(err){$("#ziaerr").textContent=err.message}
-});
+async function ziaStatus(quiet){
+  try{const r=await api("/api/zia/status");
+    $("#stable").innerHTML=r.items.map(i=>`<div class="wstep ${i.exists?"":"pending"}"><span>${i.exists?"✅":"⬜"}</span><span><b>${esc(i.type)}</b> <span class="hint">${esc(i.exists?i.detail:"not created yet")}</span></span></div>`).join("")+
+      (r.ready?'<p class="hint" style="margin:6px 0 0">All set. Remember SSL inspection must trust the Zscaler root certificate on the demo machine.</p>':"");
+  }catch(err){if(!quiet)$("#ziaerr").textContent=err.message}}
+$("#status").onclick=e=>busy(e.target,()=>ziaStatus(false));
 const ziaRun=(apply,teardown)=>async e=>{
   if(apply&&teardown&&!confirm("Delete the kit's demo URL category and rules from ZIA and activate?"))return;
-  if(apply&&!teardown&&!confirm(`Create the demo policy in ZIA${CFG.zia_user?" for "+CFG.zia_user.email:" for EVERYONE in the tenant (no test user picked)"} and activate it now?`))return;
+  if(apply&&!teardown&&!confirm(`Set up the demo policy in ZIA for ${CFG.zia_user?CFG.zia_user.email:"everyone in this tenant"} and activate it now?`))return;
   await busy(e.target,async()=>{$("#ziaerr").textContent="";
-    try{const r=await api("/api/zia/run",{apply,teardown});showOut(r.output||"(no output)");if(apply)$("#status").click()}
+    try{const r=await api("/api/zia/run",{apply,teardown});if(!apply)showOut(r.output||"(no output)");else{$("#ziaout").style.display="none";await ziaStatus(false)}}
     catch(err){$("#ziaerr").textContent=err.message}});
 };
 $("#preview").onclick=ziaRun(false,false);$("#apply").onclick=ziaRun(true,false);$("#teardown").onclick=ziaRun(true,true);
 
 // ---------------- test user, SSL rule
-function showScope(){const u=CFG.zia_user;const s=$("#scope");
-  s.textContent=u?u.email+(u.created?" (created by the kit)":""):"everyone";s.className="pill "+(u?"ok":"warn");
-  if(u)$("#uemail").value=u.email;$("#upw").style.display=CFG.has_user_pw&&u&&u.created?"":"none"}
-const uDo=action=>e=>busy(e.target,async()=>{$("#ziaerr").textContent="";$("#upwout").textContent="";
-  if(action==="create"&&!confirm(`Create ZIA user ${$("#uemail").value} with a random password (saved in your keychain) and activate?`))return;
-  try{await api("/api/zia/user",{action,email:$("#uemail").value});await loadCfg();if(action!=="clear")$("#status").click()}
-  catch(err){$("#ziaerr").textContent=err.message}});
-$("#ufind").onclick=uDo("find");$("#ucreate").onclick=uDo("create");$("#uclear").onclick=uDo("clear");
-$("#upw").onclick=async()=>{try{const r=await api("/api/zia/password");$("#upwout").innerHTML=`Password: <code>${esc(r.password)}</code> <button id="upwcopy">Copy</button>`;
+function showScope(){const u=CFG.zia_user;
+  $("#scopeSel").value=u?"user":($("#scopeSel").dataset.touched?$("#scopeSel").value:"everyone");$("#userbox").style.display=$("#scopeSel").value==="user"?"":"none";
+  if(u)$("#uemail").value=u.email;$("#scope").textContent=u?`Rules apply to ${u.email}`:"Rules apply to everyone";
+  $("#upw").style.display=CFG.has_user_pw&&u&&u.created?"":"none"}
+$("#scopeSel").onchange=async e=>{e.target.dataset.touched=1;$("#userbox").style.display=e.target.value==="user"?"":"none";$("#ziaerr").textContent="";
+  if(e.target.value==="everyone"&&CFG.zia_user){await api("/api/zia/user",{action:"clear"}).catch(()=>{});await loadCfg()}};
+$("#usave").onclick=e=>busy(e.target,async()=>{$("#ziaerr").textContent="";const email=$("#uemail").value.trim();
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){$("#ziaerr").textContent="Type the test user's email address, for example quick-demo@yourcompany.com.";return}
+  try{await api("/api/zia/user",{action:"find",email})}
+  catch(err){if(!/isn't a ZIA user/.test(err.message)){$("#ziaerr").textContent=err.message;return}
+    if(!confirm(`${email} doesn't exist in this tenant yet. Create it now, with a random password saved in your keychain?`))return;
+    try{await api("/api/zia/user",{action:"create",email})}catch(err2){$("#ziaerr").textContent=err2.message;return}}
+  await loadCfg();ziaStatus(true)});
+$("#upw").onclick=async ev=>{ev.preventDefault();try{const r=await api("/api/zia/password");$("#upwout").innerHTML=`Password: <code>${esc(r.password)}</code> <button id="upwcopy">Copy</button>`;
   $("#upwcopy").onclick=()=>navigator.clipboard.writeText(r.password);setTimeout(()=>$("#upwout").textContent="",60000)}catch(err){$("#ziaerr").textContent=err.message}};
 $("#sslrule").onchange=e=>api("/api/config",{ssl:e.target.checked}).catch(()=>{});
 

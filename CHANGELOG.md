@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.5
+- **Simpler ZIA policy panel:** choose "Everyone in this tenant" or "One test user" (one email box and **Save user**, which uses the user if it exists or offers to create it), then one **Set up ZIA policy** button. Status shows automatically as ticks; SSL option, Preview and raw output moved under Advanced.
+
 ## 0.5.4
 - CloudShare: pasted API IDs and keys are trimmed (a stray space or line break breaks the signature), and "HMAC doesn't match" now says plainly that the key doesn't match the API ID and how to fix it. (Signing verified identical to CloudShare's official SDK.)
 
