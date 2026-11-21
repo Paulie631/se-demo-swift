@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1
+- Sharing the demo Space with your Quick user now drops any permission Quick rejects (it rejected `UpdateSpaceResources`) and retries, instead of giving up.
+- The knowledge base progress shows the real sync status (queued, running, completed) and waits for the first sync to finish.
+
 ## 0.5.0
 - **Automatic Amazon Quick setup** (AWS tab › Wire it to Amazon Quick › Check Quick / Set up knowledge base): through the Quick API the kit creates the S3 data source, the knowledge base (owned by the Quick user you pick, waits for the first sync) and a demo Space containing it. **Remove** deletes them; **Delete stack** removes them first.
 - The stack now includes **QuickKbRole**, which Quick assumes to read the bucket, so the console's Permissions › AWS resources step isn't needed. Redeploy (Deploy stack updates in place) to add it.

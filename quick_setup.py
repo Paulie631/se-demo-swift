@@ -180,14 +180,17 @@ def setup(sess, acct: str, project: str, bucket: str, role_arn: str, owner_arn: 
         kb = c.describe_knowledge_base(AwsAccountId=acct, KnowledgeBaseId=i["kb"])["KnowledgeBase"]
         ing = kb.get("LatestIngestionSummary") or {}
         line = f"Knowledge base: {kb.get('Status')}" + (f", {kb['DocumentCount']} documents" if kb.get("DocumentCount") else "") \
-            + (f", sync {ing.get('Status') or ing.get('status')}" if ing else "")
+            + (f", sync {ing['IngestionStatus'].lower()}" if ing.get("IngestionStatus") else "")
         if line != last:
             progress(line)
             last = line
         if kb.get("Status") == "FAILED":
             raise QuickError("The knowledge base failed. Open it in the Quick console for the ingestion error.")
-        if kb.get("Status") == "ACTIVE" and kb.get("DocumentCount"):
+        if kb.get("Status") == "ACTIVE" and (ing.get("IngestionStatus") in ("COMPLETED", "INCOMPLETE")
+                                             or (kb.get("DocumentCount") and not ing.get("IngestionStatus"))):
             break
+        if ing.get("IngestionStatus") in ("FAILED", "TIMEOUT", "CANCELLED"):
+            raise QuickError(f"The first sync {ing['IngestionStatus'].lower()}. Open the knowledge base in Quick for details.")
         if kb.get("Status") == "ACTIVE" and time.time() - t0 > 120:
             progress("Knowledge base is active; the sync may still be running (check the document count in Quick).")
             break
@@ -218,15 +221,31 @@ def setup(sess, acct: str, project: str, bucket: str, role_arn: str, owner_arn: 
                 progress("Added the knowledge base to the space")
             except Exception as e:
                 progress(f"Couldn't add the knowledge base to the space ({_explain(e)}); add it in the Quick console.")
-        try:
-            c.update_space_permissions(AwsAccountId=acct, SpaceId=i["space"],
-                                       GrantPermissions=[{"Principal": owner_arn, "Actions": SPACE_OWNER_ACTIONS}])
-            progress("Shared the space with your Quick user")
-        except Exception as e:
-            progress(f"Couldn't share the space with your user ({_explain(e)}); share it in the Quick console if "
-                     "you don't see it.")
+        share_space(c, acct, i["space"], owner_arn, progress)
         sp = {"arn": arn}
     return {"data_source": ds_arn, "knowledge_base": kb_arn, "space": sp, "documents": kb.get("DocumentCount")}
+
+
+def share_space(c, acct: str, space_id: str, owner_arn: str, progress=print) -> bool:
+    """Grant the owner full access to the space. The valid action names aren't documented in the model, so start
+    from the full owner set and drop any action Quick rejects ("Invalid action: quicksight:X"), then retry."""
+    import re
+    actions = list(SPACE_OWNER_ACTIONS)
+    for _ in range(len(SPACE_OWNER_ACTIONS)):
+        try:
+            c.update_space_permissions(AwsAccountId=acct, SpaceId=space_id,
+                                       GrantPermissions=[{"Principal": owner_arn, "Actions": actions}])
+            progress(f"Shared the space with your Quick user ({len(actions)} permissions)")
+            return True
+        except Exception as e:
+            m = re.search(r"Invalid action: (quicksight:\w+)", str(e))
+            if m and m.group(1) in actions and len(actions) > 1:
+                actions.remove(m.group(1))
+                continue
+            progress(f"Couldn't share the space with your user ({_explain(e)}); share it in the Quick console if "
+                     "you don't see it.")
+            return False
+    return False
 
 
 def teardown(sess, acct: str, project: str, progress=print) -> None:

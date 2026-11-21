@@ -630,6 +630,11 @@ class FakeQS:
 
     def update_space_permissions(self, **kw):
         self.calls.append(("update_space_permissions", kw))
+        bad = [a for a in kw["GrantPermissions"][0]["Actions"] if a in ("quicksight:UpdateSpaceResources", "quicksight:ListSpaceResources")]
+        if bad:   # what real Quick did: reject one unknown action per call
+            raise Exception(f"An error occurred (InvalidParameterValueException) when calling the UpdateSpacePermissions "
+                            f"operation: Invalid action: {bad[0]} for principal: {kw['GrantPermissions'][0]['Principal']}")
+        self.granted = kw["GrantPermissions"][0]["Actions"]
 
     def delete_space(self, AwsAccountId, SpaceId):
         self.spaces.pop(SpaceId)
@@ -671,6 +676,8 @@ class QuickSetupTests(unittest.TestCase):
                          {"type": "S3V2", "connectionConfiguration": {"bucketName": "zs-quick-demo-data-123-us-east-1",
                                                                       "bucketOwnerAccountId": acct}})
         self.assertEqual(self.qs.spaces["zs-quick-demo-space"], [{"resourceArn": "arn:kb"}])
+        self.assertNotIn("quicksight:UpdateSpaceResources", self.qs.granted)     # rejected actions are dropped, then it retries
+        self.assertIn("quicksight:DescribeSpace", self.qs.granted)
         n = len(self.qs.calls)
         q.setup(self.sess, acct, "zs-quick-demo", "b", "", owner, True, progress=lambda m: None)   # second run
         self.assertNotIn("create_data_source", [c[0] for c in self.qs.calls[n:]])
