@@ -28,7 +28,7 @@ The Quick subscription and its integrations are set up in the Quick console. The
 
 1. **Quick account** (Enterprise edition is required for MCP integrations) in the same region as the stack.
 2. **Knowledge base:** give Quick access to the `DataBucketName` bucket. Then create an Amazon S3 integration and knowledge base on `KnowledgeBaseS3Uri`, and add it to a Space or chat agent.
-3. **MCP connector:** Connectors / Integrations → Model Context Protocol → URL = `McpServerUrl`, service authentication = None. If you set `McpToken`, use a custom `Authorization: Bearer <token>` header instead. Leave `get_vendor_profile` set to "Ask each time" if you want to show the approval step.
+3. **MCP connector:** Connectors → Create for your team → Model Context Protocol (MCP) → endpoint = `McpServerUrl`, connection type Public network, authentication **No authentication**. Quick's MCP integration doesn't support custom headers, so leave `McpToken` blank when Quick will connect (a token only works for Quick Desktop's remote MCP servers, which have a Token field).
 4. **ZPA path (optional):** in ZPA, create an application segment for the `ZpaAppSegmentDomain` output (TCP 443) on the new connector group, plus an access policy. With ZCC on, Quick's main web domain now goes through ZPA to the PrivateLink endpoint. To *enforce* it, restrict the Quick account to `QuickVpcEndpointId` in Quick admin. This locks out every non-ZPA user, so only do it on a dedicated demo account.
 
 ## Demo moments this enables

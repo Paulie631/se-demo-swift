@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.3
+- Corrected the Quick wiring steps: Quick's MCP integration supports OAuth or No authentication, not custom headers, so deploy without an MCP token when Quick connects.
+
 ## 0.4.2
 - **Fix: the AWS stack hung on SeedData and then couldn't be deleted.** The seed function relied on CloudFormation's `cfnresponse` helper, which CloudFormation only adds when it spots a plain `import cfnresponse` line, and ours was a combined import, so the function crashed before it could answer. It now answers CloudFormation itself, and a delete always succeeds even if emptying the bucket fails.
 

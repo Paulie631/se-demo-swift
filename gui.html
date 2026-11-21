@@ -258,7 +258,7 @@ body.present .notes,body.present .presenter{display:none}
         <div class="field"><span class="lbl">EC2 key pair (optional)</span><input type="text" id="keypair"></div>
         <div class="field"><span class="lbl">ZPA App Connector provisioning key (sent to AWS as a hidden parameter, never saved)</span><input type="password" id="zpakey" autocomplete="off"></div>
       </div>
-      <div class="field" style="margin-top:6px"><span class="lbl">MCP server token (optional: blank = no auth; sent as a hidden parameter, never saved)</span><input type="password" id="mcpnew" autocomplete="off"></div>
+      <div class="field" style="margin-top:6px"><span class="lbl">MCP server token. Leave blank for Quick: its MCP integration can't send custom headers. Only for Quick Desktop or testing.</span><input type="password" id="mcpnew" autocomplete="off"></div>
       <div class="row" style="margin-top:6px"><button class="primary" id="deploy">Deploy stack</button><button class="danger" id="awsdel">Delete stack</button></div>
       <div class="row" style="margin-top:8px"><button id="dl">Download template</button><a id="cfnlink" target="_blank" rel="noopener">Open CloudFormation console ↗</a></div>
       <p class="hint" style="margin-top:10px">Deploying takes about 2 minutes (5–8 with the ZPA path). Prefer to do it yourself? Download the template and upload it in the CloudFormation console.</p>
@@ -271,7 +271,7 @@ body.present .notes,body.present .presenter{display:none}
       <ol class="steps">
         <li>Press <b>Deploy stack</b> (or upload the downloaded template in CloudFormation yourself). The outputs appear under the button.</li>
         <li>Quick console: give Quick access to the stack's <code>DataBucketName</code>, then create an <b>S3 knowledge base</b> on it and add it to a chat agent or Space.</li>
-        <li>Quick console › Integrations › <b>MCP</b>: URL = <code>McpServerUrl</code>, service auth <b>None</b> (or a custom <code>Authorization: Bearer …</code> header if you set a token). MCP integrations need Quick Enterprise.</li>
+        <li>Quick console › <b>Connectors</b> › <b>Create for your team</b> › <b>Model Context Protocol (MCP)</b>: endpoint = <code>McpServerUrl</code>, connection type <b>Public network</b>, authentication <b>No authentication</b>. (Quick's MCP integration doesn't support custom headers, so deploy without an MCP token.) Needs Quick Enterprise.</li>
         <li>ZPA path: create an app segment for <code>&lt;region&gt;.quicksight.aws.amazon.com</code> (TCP 443) on the new connector group.</li>
         <li><b>Delete the stack after the demo.</b> The bucket is emptied automatically.</li>
       </ol>
