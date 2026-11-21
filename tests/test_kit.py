@@ -364,7 +364,9 @@ class UpdaterTests(unittest.TestCase):
     def _fake_get(self, version, changelog):
         zipped = self._zip(version)
 
-        def get(url, timeout=None, verify=None):
+        def get(url, timeout=None, verify=None, params=None, headers=None):
+            if "api.github.com" in url:
+                return types.SimpleNamespace(status_code=404, content=b"", text="")
             if url.endswith("/quick_kit.py"):
                 body = f'VERSION = "{version}"\n'.encode()
             elif url.endswith("/CHANGELOG.md"):
@@ -715,6 +717,27 @@ class JsonSafetyTests(unittest.TestCase):
         r = rq.get("http://127.0.0.1:8811/api/quick/status", headers={"X-Kit-Token": tok})
         self.assertEqual(r.status_code, 200)
         self.assertIn("2026-11-20 20:30:00", r.text)
+
+
+class UpdaterGitTests(unittest.TestCase):
+    def test_git_checkout_sees_new_push_immediately(self):
+        """Field issue: the check read raw.githubusercontent.com (5-minute cache) and reported the old version."""
+        import subprocess, updater
+        run = lambda *a, cwd=None: subprocess.run(a, cwd=cwd, check=True, capture_output=True)
+        root = pathlib.Path(tempfile.mkdtemp())
+        run("git", "init", "-q", "--bare", "-b", "main", str(root / "origin.git"))
+        run("git", "clone", "-q", str(root / "origin.git"), str(root / "dev"))
+        dev, g = root / "dev", ["-c", "user.name=t", "-c", "user.email=t@t"]
+        (dev / "quick_kit.py").write_text('VERSION = "0.5.1"\n'); (dev / "CHANGELOG.md").write_text("# Changelog\n")
+        run("git", *g, "add", "-A", cwd=dev); run("git", *g, "commit", "-qm", "a", cwd=dev); run("git", "push", "-q", "origin", "HEAD:main", cwd=dev)
+        run("git", "clone", "-q", str(root / "origin.git"), str(root / "se"))
+        (dev / "quick_kit.py").write_text('VERSION = "0.5.2"\n')
+        (dev / "CHANGELOG.md").write_text("# Changelog\n\n## 0.5.2\n- datetime fix\n")
+        run("git", *g, "commit", "-qam", "b", cwd=dev); run("git", "push", "-q", "origin", "HEAD:main", cwd=dev)
+        info = updater.check("0.5.1", root / "se")
+        self.assertEqual((info["mode"], info["latest"], info["available"]), ("git", "0.5.2", True))
+        self.assertIn("datetime fix", info["notes"])
+        self.assertEqual(updater.apply(root / "se", root / "bk", "0.5.2", log=lambda m: None), "0.5.2")
 
 
 if __name__ == "__main__":

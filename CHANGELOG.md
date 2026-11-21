@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.3
+- The update check sees a new version immediately. Git checkouts check with `git fetch`; other copies use GitHub's API before the file server, which caches files for about 5 minutes and could report "up to date" right after a release.
+
 ## 0.5.2
 - Fix: **Check Quick** failed with "Object of type datetime is not JSON serializable" once a knowledge base had synced (AWS returns timestamps). All console responses now handle them.
 

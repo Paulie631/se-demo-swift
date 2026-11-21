@@ -72,14 +72,43 @@ def mode(here: pathlib.Path) -> str:
     return "git" if (here / ".git").exists() else "copy"
 
 
+def _git_file(here: pathlib.Path, ref: str, path: str) -> str:
+    """Read a file from the remote branch of a git checkout: git fetch is authoritative, with no CDN cache."""
+    f = subprocess.run(["git", "-C", str(here), "fetch", "--quiet", "origin", ref], capture_output=True, text=True,
+                       timeout=60)
+    if f.returncode:
+        raise UpdateError(f"git fetch failed: {(f.stderr or f.stdout).strip()[-200:]}")
+    r = subprocess.run(["git", "-C", str(here), "show", f"origin/{ref}:{path}"], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _latest_file(repo: str, ref: str, path: str, verify=True) -> str:
+    """GitHub's contents API first (current immediately), then raw.githubusercontent.com (cached for ~5 minutes)."""
+    try:
+        r = requests.get(f"https://api.github.com/repos/{repo}/contents/{path}", params={"ref": ref},
+                         headers={"Accept": "application/vnd.github.raw+json"}, timeout=20, verify=verify)
+        if r.status_code == 200 and not r.text.lstrip().startswith("<"):
+            return r.text
+    except requests.RequestException:
+        pass
+    return _get(f"https://raw.githubusercontent.com/{repo}/{ref}/{path}", verify).text
+
+
 def check(current: str, here: pathlib.Path, repo=DEFAULT_REPO, ref=DEFAULT_REF, verify=True,
           backup: pathlib.Path | None = None) -> dict:
-    raw = f"https://raw.githubusercontent.com/{repo}/{ref}"
-    latest = version_in(_get(f"{raw}/quick_kit.py", verify).text)
+    if mode(here) == "git":
+        src = _git_file(here, ref, "quick_kit.py")
+        latest = version_in(src)
+        if latest:
+            prev = backup / "quick_kit.py" if backup else None
+            return {"current": current, "latest": latest, "available": parse(latest) > parse(current),
+                    "notes": notes_since(_git_file(here, ref, "CHANGELOG.md"), current), "mode": "git",
+                    "repo": repo, "ref": ref, "rollback": ""}
+    latest = version_in(_latest_file(repo, ref, "quick_kit.py", verify))
     if not latest:
         raise UpdateError("Couldn't read the latest version from GitHub.")
     try:
-        notes = notes_since(_get(f"{raw}/CHANGELOG.md", verify).text, current)
+        notes = notes_since(_latest_file(repo, ref, "CHANGELOG.md", verify), current)
     except UpdateError:
         notes = ""
     prev = backup / "quick_kit.py" if backup else None
