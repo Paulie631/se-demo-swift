@@ -700,5 +700,22 @@ class QuickSetupTests(unittest.TestCase):
         self.assertIn("QuickKbRoleArn:", body)
 
 
+class JsonSafetyTests(unittest.TestCase):
+    def test_console_serializes_aws_datetimes(self):
+        """Field bug: Check Quick returned LatestIngestionSummary.StartTime (datetime) and the console threw
+        'Object of type datetime is not JSON serializable'."""
+        import datetime, http.server, re, threading, requests as rq
+        qk.quick_status = lambda cfg: {"quick": {"name": "x"}, "resources": {"knowledge_base": {
+            "ingestion": {"IngestionStatus": "COMPLETED", "StartTime": datetime.datetime(2026, 11, 20, 20, 30)}}}}
+        th = threading.Thread(target=qk.cmd_gui, kwargs={"port": 8811, "open_browser": False}, daemon=True)
+        th.start()
+        import time; time.sleep(1)
+        html = rq.get("http://127.0.0.1:8811/").text
+        tok = re.search(r'const TOKEN="([^"]+)"', html).group(1)
+        r = rq.get("http://127.0.0.1:8811/api/quick/status", headers={"X-Kit-Token": tok})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("2026-11-20 20:30:00", r.text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.2
+- Fix: **Check Quick** failed with "Object of type datetime is not JSON serializable" once a knowledge base had synced (AWS returns timestamps). All console responses now handle them.
+
 ## 0.5.1
 - Sharing the demo Space with your Quick user now drops any permission Quick rejects (it rejected `UpdateSpaceResources`) and retries, instead of giving up.
 - The knowledge base progress shows the real sync status (queued, running, completed) and waits for the first sync to finish.
