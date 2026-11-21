@@ -14,6 +14,15 @@ from __future__ import annotations
 import json
 
 NAME = "Amazon Quick (Demo)"
+GROUP_NAME = "Amazon Quick (Demo) connectors"
+KEY_NAME = "Amazon Quick (Demo) key"
+# App Connector group location per Quick region (ZPA wants a physical location for the group)
+REGION_LOC = {
+    "us-east-1": ("Ashburn, VA, USA", "Ashburn, US", "US", "39.0438", "-77.4874"),
+    "us-west-2": ("Boardman, OR, USA", "Boardman, US", "US", "45.8399", "-119.7006"),
+    "eu-west-1": ("Dublin, Ireland", "Dublin, IE", "IE", "53.3498", "-6.2603"),
+    "ap-southeast-2": ("Sydney, Australia", "Sydney, AU", "AU", "-33.8688", "151.2093"),
+}
 BASE = "https://api.zsapi.net/zpa/mgmtconfig"
 
 
@@ -76,6 +85,58 @@ class ZPA:
         return next((r for r in self.list(f"/policySet/{policy_id}/rule") if r.get("name") == NAME), None)
 
 
+def connector_cert_id(zpa: ZPA) -> str:
+    """The 'Connector' enrollment certificate every App Connector group and key is tied to (v2 API)."""
+    certs = zpa.list("/enrollmentCert", search="Connector", v=2)
+    c = next((x for x in certs if x.get("name") == "Connector"), None) or (certs[0] if certs else None)
+    if not c:
+        raise ZpaError("Couldn't find ZPA's 'Connector' enrollment certificate.")
+    return str(c["id"])
+
+
+def ensure_connector_group(zpa: ZPA, region: str, apply: bool, log=print) -> str:
+    """Create (or reuse) the kit's App Connector group. Returns its id ('<new>' on a dry run)."""
+    hit = zpa.find("/appConnectorGroup", GROUP_NAME)
+    if hit:
+        log(f"[ok] App Connector group exists: {hit['id']}")
+        return str(hit["id"])
+    loc, city, cc, lat, lon = REGION_LOC.get(region, REGION_LOC["us-east-1"])
+    body = {"name": GROUP_NAME, "description": "Amazon Quick SE demo kit: the AWS stack's App Connector",
+            "enabled": True, "location": loc, "cityCountry": city, "countryCode": cc, "latitude": lat,
+            "longitude": lon, "dnsQueryType": "IPV4_IPV6", "upgradeDay": "SUNDAY", "upgradeTimeInSecs": "66600",
+            "versionProfileId": "0", "overrideVersionProfile": False}
+    log(f"--- CREATE App Connector group ---\n{json.dumps(body, indent=2)}")
+    if not apply:
+        return "<new connector group>"
+    body["enrollmentCertId"] = connector_cert_id(zpa)
+    made = zpa.req("POST", "/appConnectorGroup", body)
+    log(f"[+] created App Connector group {made.get('id')}")
+    return str(made["id"])
+
+
+def ensure_provisioning_key(zpa: ZPA, group_id: str, apply: bool, log=print) -> str:
+    """Create (or reuse) a provisioning key for the group. Returns the key string ('' on a dry run)."""
+    path = "/associationType/CONNECTOR_GRP/provisioningKey"
+    hit = next((k for k in zpa.list(path, search=KEY_NAME) if k.get("name") == KEY_NAME), None)
+    if hit and hit.get("provisioningKey"):
+        log("[ok] Provisioning key exists")
+        return hit["provisioningKey"]
+    body = {"name": KEY_NAME, "maxUsage": "5", "enabled": True, "zcomponentId": str(group_id)}
+    log(f"--- CREATE provisioning key ---\n{json.dumps(body, indent=2)}")
+    if not apply:
+        return ""
+    body["enrollmentCertId"] = connector_cert_id(zpa)
+    made = zpa.req("POST", path, body)
+    key = made.get("provisioningKey") or ""
+    if not key:   # some tenants return the key only on a read
+        hit = next((k for k in zpa.list(path, search=KEY_NAME) if k.get("name") == KEY_NAME), {})
+        key = hit.get("provisioningKey", "")
+    if not key:
+        raise ZpaError("ZPA created the provisioning key but didn't return its value; copy it from the ZPA console.")
+    log("[+] created provisioning key (max 5 uses)")
+    return key
+
+
 def plan_bodies(region: str, connector_group_id: str) -> dict:
     domain = f"{region}.quicksight.aws.amazon.com"
     return {
@@ -94,8 +155,10 @@ def plan_bodies(region: str, connector_group_id: str) -> dict:
 
 
 def setup(zpa: ZPA, region: str, connector_group_id: str, apply: bool, log=print) -> bool:
-    if not connector_group_id:
-        raise ZpaError("Pick the App Connector group the demo stack's connector enrolls into.")
+    """connector_group_id 'auto' (or empty) = create/reuse the kit's own group and provisioning key."""
+    if connector_group_id in ("", "auto", None):
+        connector_group_id = ensure_connector_group(zpa, region, apply, log)
+        ensure_provisioning_key(zpa, connector_group_id, apply, log)
     b = plan_bodies(region, connector_group_id)
     changed = False
 
@@ -151,6 +214,24 @@ def teardown(zpa: ZPA, apply: bool, log=print) -> bool:
                 zpa.req("DELETE", f"{path}/{hit['id']}",
                         params={"forceDelete": "true"} if path == "/application" else None)
                 changed = True
+    grp = zpa.find("/appConnectorGroup", GROUP_NAME)
+    if grp:
+        key_path = "/associationType/CONNECTOR_GRP/provisioningKey"
+        for k in zpa.list(key_path, search=KEY_NAME):
+            if k.get("name") == KEY_NAME:
+                log(f"[-] delete provisioning key {k['id']}")
+                if apply:
+                    zpa.req("DELETE", f"{key_path}/{k['id']}")
+                    changed = True
+        for c in grp.get("connectors") or []:   # enrolled connectors block deleting the group
+            log(f"[-] delete App Connector {c.get('name', c.get('id'))}")
+            if apply:
+                zpa.req("DELETE", f"/connector/{c['id']}")
+                changed = True
+        log(f"[-] delete App Connector group {grp['id']}")
+        if apply:
+            zpa.req("DELETE", f"/appConnectorGroup/{grp['id']}")
+            changed = True
     if not changed and apply:
         log("Nothing to remove in ZPA.")
     return changed
@@ -169,6 +250,9 @@ def status(zpa: ZPA) -> list[dict]:
             detail = ", ".join(g.get("name", "") for g in hit.get("appConnectorGroups") or [])
         out.append({"name": NAME, "type": label, "exists": bool(hit), "detail": detail})
     r = zpa.find_rule(pid)
+    g = zpa.find("/appConnectorGroup", GROUP_NAME)
+    out.insert(0, {"name": GROUP_NAME, "type": "App Connector group (kit-created)", "exists": bool(g),
+                   "detail": f"{len(g.get('connectors') or [])} connector(s)" if g else "only if you let the kit create it"})
     out.append({"name": NAME, "type": "Access policy rule", "exists": bool(r),
                 "detail": f"{r.get('action')} · order {r.get('ruleOrder')}" if r else ""})
     return out

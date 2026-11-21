@@ -54,7 +54,7 @@ import quick_setup  # noqa: E402
 import updater  # noqa: E402
 import zpa_quick  # noqa: E402
 
-VERSION = "0.5.5"
+VERSION = "0.6.0"
 HOME = pathlib.Path(os.environ.get("QUICK_KIT_HOME", pathlib.Path.home() / ".quick-se-kit"))
 CFG_FILE = HOME / "config.json"
 LOG_FILE = HOME / "kit.log"
@@ -210,7 +210,7 @@ def zpa_run(cfg: dict, apply: bool, teardown: bool) -> dict:
     log(f"ZPA {'teardown' if teardown else 'setup'} ({'APPLY' if apply else 'dry run'}), region {zpa_region(cfg)}",
         "action")
     changed = (zpa_quick.teardown(z, apply, capture) if teardown else
-               zpa_quick.setup(z, zpa_region(cfg), (cfg.get("zpa") or {}).get("connector_group_id", ""), apply,
+               zpa_quick.setup(z, zpa_region(cfg), (cfg.get("zpa") or {}).get("connector_group_id") or "auto", apply,
                                capture))
     return {"changed": changed, "output": "\n".join(lines)}
 
@@ -370,14 +370,35 @@ def aws_status(cfg: dict) -> dict:
     return {"identity": who, "stack": st}
 
 
+def zpa_auto_key(cfg: dict, progress=None) -> str:
+    """Create/reuse the kit's App Connector group + provisioning key in ZPA and return the key (never stored)."""
+    zp = cfg.get("zpa") or {}
+    if not zp.get("customer_id"):
+        raise ValueError("To create the provisioning key automatically, enter your ZPA customer ID on the Setup tab "
+                         "(ZPA panel), or paste a provisioning key here.")
+    z = zpa_client(cfg)
+    gid = zp.get("connector_group_id")
+    if gid in (None, "", "auto"):
+        gid = zpa_quick.ensure_connector_group(z, zpa_region(cfg), True, lambda m: progress and progress("ZPA: " + m))
+    key = zpa_quick.ensure_provisioning_key(z, gid, True, lambda m: progress and progress("ZPA: " + m))
+    log("ZPA provisioning key ready for the stack (passed to AWS as a hidden parameter, not saved)", "ok")
+    return key
+
+
 def aws_deploy_stack(cfg: dict, mcp_token: str = "", zpa_key: str = "", progress=None) -> dict:
     a = aws_cfg(cfg)
     s = aws_sess(cfg)
     who = aws_deploy.whoami(s)
-    if a.get("zpa") and not zpa_key:
-        raise ValueError("The ZPA path needs the App Connector provisioning key.")
     if a.get("zpa") and not a.get("ami"):
-        raise ValueError("The ZPA path needs the App Connector AMI ID for this region.")
+        amis = aws_deploy.find_connector_ami(s)
+        if not amis:
+            raise ValueError("Couldn't find a Zscaler App Connector AMI in this region. Subscribe to it in AWS "
+                             "Marketplace, then paste its AMI ID.")
+        a["ami"] = amis[0]["id"]
+        if progress:
+            progress(f"Using App Connector AMI {a['ami']} ({amis[0]['name']})")
+    if a.get("zpa") and not zpa_key:
+        zpa_key = zpa_auto_key(cfg, progress)
     body = build_template(a)
     log(f"AWS: deploying stack {a['project']} to {who['account']} / {a['region']}"
         + (" with the ZPA path" if a.get("zpa") else ""), "action")
@@ -677,6 +698,8 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                                         "has_secret": bool(get_secret("aws_secret_access_key"))})
             if path == "/api/quick/status":
                 return self._do(lambda: quick_status(load_cfg()))
+            if path == "/api/aws/find-ami":
+                return self._do(lambda: {"amis": aws_deploy.find_connector_ami(aws_sess(load_cfg()))[:5]})
             if path == "/api/aws/status":
                 return self._do(lambda: aws_status(load_cfg()))
             if path == "/api/update/check":
@@ -995,7 +1018,7 @@ def main(argv=None) -> None:
                     print(f"  {k}: {v}")
             elif a.action == "deploy":
                 tok = getpass.getpass("MCP token (Enter for none): ")
-                zk = getpass.getpass("ZPA provisioning key: ") if aws_cfg(cfg).get("zpa") else ""
+                zk = getpass.getpass("ZPA provisioning key (Enter = create it in ZPA automatically): ") if aws_cfg(cfg).get("zpa") else ""
                 st = aws_deploy_stack(cfg, tok, zk, progress=lambda m: print("  " + m))
                 for k, v in (st.get("outputs") or {}).items():
                     print(f"  {k}: {v}")

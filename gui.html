@@ -153,7 +153,7 @@ body.present .notes,body.present .presenter{display:none}
       <p>For the AWS stack's ZPA path. Creates a segment group, a server group on your App Connector group, an application segment for <code id="zpadom">us-east-1.quicksight.aws.amazon.com</code> (TCP 443) and an access rule allowing it from Client Connector.</p>
       <div class="field"><span class="lbl">ZPA customer (tenant) ID, a long number shown on ZPA's API Keys page</span><input type="text" id="zpacid" placeholder="216196257331281920"></div>
       <div class="row"><button id="zpaload">Save &amp; load connector groups</button></div>
-      <div class="field" style="margin-top:10px"><span class="lbl">App Connector group (the one the stack's connector enrolls into: its provisioning key goes in the AWS template)</span><select id="zpagrp"><option value="">Load connector groups first</option></select></div>
+      <div class="field" style="margin-top:10px"><span class="lbl">App Connector group for the AWS stack's connector</span><select id="zpagrp"><option value="auto">Create one for me (recommended)</option></select></div>
       <div class="row">
         <button id="zpastatus">Check status</button><button id="zpaprev">Preview</button>
         <button class="primary" id="zpaapply">Create</button><button class="danger" id="zpadel">Remove</button>
@@ -252,10 +252,10 @@ body.present .notes,body.present .presenter{display:none}
       <div class="field"><span class="lbl">Region (must be a Quick region)</span><select id="awsregion"></select></div>
       <label class="check"><input type="checkbox" id="zpa"> Add the ZPA path (VPC, Quick PrivateLink, App Connector · about $3–5/day)</label>
       <div id="zpaopts" style="display:none;margin-top:10px">
-        <div class="field"><span class="lbl">Zscaler App Connector AMI ID for this region (subscribe in AWS Marketplace first)</span><input type="text" id="ami" placeholder="ami-…"></div>
+        <div class="field"><span class="lbl">App Connector AMI (leave blank to find it automatically; subscribe in AWS Marketplace once)</span><input type="text" id="ami" placeholder="auto"></div>
         <div class="field"><span class="lbl">Instance type</span><select id="itype"><option>m5a.large</option><option>t3.medium</option><option>m5.large</option><option>m6i.large</option></select></div>
         <div class="field"><span class="lbl">EC2 key pair (optional)</span><input type="text" id="keypair"></div>
-        <div class="field"><span class="lbl">ZPA App Connector provisioning key (sent to AWS as a hidden parameter, never saved)</span><input type="password" id="zpakey" autocomplete="off"></div>
+        <div class="field"><span class="lbl">Provisioning key (leave blank: the kit creates it in ZPA and passes it to AWS, never saved)</span><input type="password" id="zpakey" autocomplete="off" placeholder="auto"></div>
       </div>
       <div class="field" style="margin-top:6px"><span class="lbl">MCP server token. Leave blank for Quick: its MCP integration can't send custom headers. Only for Quick Desktop or testing.</span><input type="password" id="mcpnew" autocomplete="off"></div>
       <div class="row" style="margin-top:6px"><button class="primary" id="deploy">Deploy stack</button><button class="danger" id="awsdel">Delete stack</button></div>
@@ -396,8 +396,8 @@ $("#sslrule").onchange=e=>api("/api/config",{ssl:e.target.checked}).catch(()=>{}
 // ---------------- ZPA
 function zpaShow(t){const o=$("#zpaout");o.style.display="";o.textContent=t}
 async function zpaGroups(keep){const {groups}=await api("/api/zpa/groups");
-  $("#zpagrp").innerHTML='<option value="">Choose a connector group</option>'+groups.map(g=>`<option value="${esc(g.id)}">${esc(g.name)} · ${g.connectors} connector(s)</option>`).join("");
-  if(keep&&CFG.zpa.connector_group_id)$("#zpagrp").value=CFG.zpa.connector_group_id}
+  $("#zpagrp").innerHTML='<option value="auto">Create one for me (recommended)</option>'+groups.map(g=>`<option value="${esc(g.id)}">${esc(g.name)} · ${g.connectors} connector(s)</option>`).join("");
+  $("#zpagrp").value=(keep&&CFG.zpa.connector_group_id)||"auto"}
 $("#zpaload").onclick=e=>busy(e.target,async()=>{$("#zpaerr").textContent="";
   try{await api("/api/config",{zpa:{customer_id:$("#zpacid").value}});await loadCfg();await zpaGroups(true)}catch(err){$("#zpaerr").textContent=err.message}});
 $("#zpagrp").onchange=()=>{const o=$("#zpagrp").selectedOptions[0];api("/api/config",{zpa:{connector_group_id:$("#zpagrp").value,connector_group_name:o?o.textContent.replace(/ ·.*$/,""):""}}).then(loadCfg).catch(()=>{})};
@@ -567,7 +567,7 @@ async function awsJob(path,body,btn){
     if(j.state==="done")return j.result;if(j.state==="error")throw new Error(j.error)}
 }
 $("#deploy").onclick=e=>busy(e.target,async()=>{
-  const p=awsAll();if(p.zpa&&(!p.ami||!$("#zpakey").value)){$("#awserr").textContent="The ZPA path needs the App Connector AMI ID and provisioning key.";return}
+  const p=awsAll();if(p.zpa&&!$("#zpakey").value&&!(CFG.zpa&&CFG.zpa.customer_id)){$("#awserr").textContent="For the ZPA path, enter your ZPA customer ID on the Setup tab (the kit then creates the key), or paste a provisioning key.";return}
   if(!confirm(`Deploy stack "${p.project}" to ${p.region}${p.zpa?" with the ZPA path (about $3–5/day)":""}?`))return;
   try{await saveAws();const r=await awsJob("/api/aws/deploy",{mcp_token:$("#mcpnew").value,zpa_key:$("#zpakey").value});
     $("#awslog").textContent+=`\nDone: ${r.status}`;showOuts(r.outputs);if(r.outputs&&r.outputs.McpServerUrl)$("#mcpurl").value=r.outputs.McpServerUrl;
@@ -583,7 +583,6 @@ function cfnLink(){const r=$("#awsregion").value||"us-east-1";$("#cfnlink").href
 $("#awsregion").onchange=()=>{cfnLink();api("/api/config",{aws:awsParams()}).then(loadCfg).catch(()=>{})};
 $("#dl").onclick=e=>busy(e.target,async()=>{
   $("#awserr").textContent="";const p=awsParams();
-  if(p.zpa&&!p.ami){$("#awserr").textContent="The ZPA path needs the App Connector AMI ID for this region.";return}
   try{
     api("/api/config",{aws:p}).catch(()=>{});
     const r=await fetch("/api/aws/template",{method:"POST",headers:{"X-Kit-Token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify(p)});

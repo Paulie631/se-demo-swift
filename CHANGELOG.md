@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+- **ZPA, fully automatic (phase 1):** the ZPA panel's connector group now defaults to **Create one for me**. The kit creates the "Amazon Quick (Demo) connectors" App Connector group (located near your Quick region, tied to the Connector enrollment certificate) and a provisioning key (max 5 uses), then the segment group, server group, application and access rule as before.
+- **AWS deploy with the ZPA path needs no copy and paste:** leave the provisioning key and AMI blank. The kit creates or reuses the key in ZPA and passes it to CloudFormation as a hidden parameter (never saved), and finds the newest Zscaler App Connector AMI in the region. If AWS says OptInRequired, subscribe to Zscaler App Connector in AWS Marketplace once.
+- ZPA teardown also removes the kit's provisioning key, any connectors enrolled in its group, and the group itself. Groups you made yourself are never touched.
+
 ## 0.5.5
 - **Simpler ZIA policy panel:** choose "Everyone in this tenant" or "One test user" (one email box and **Save user**, which uses the user if it exists or offers to create it), then one **Set up ZIA policy** button. Status shows automatically as ticks; SSL option, Preview and raw output moved under Advanced.
 

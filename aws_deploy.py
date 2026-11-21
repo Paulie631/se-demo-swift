@@ -52,6 +52,9 @@ def explain(e: Exception) -> str:
         return "No AWS credentials found. Pick a profile, or enter access keys."
     if "InvalidClientTokenId" in s or "SignatureDoesNotMatch" in s:
         return "AWS rejected the access keys (check the key ID and secret)."
+    if "OptInRequired" in s:
+        return ("AWS Marketplace: subscribe to the Zscaler App Connector product once in this account (Marketplace > "
+                "search 'Zscaler App Connector' > Continue to Subscribe), then deploy again.")
     if "AccessDenied" in s:
         return f"AWS denied the request: {s[:300]}. The identity needs CloudFormation, IAM, S3, Lambda and (for ZPA) EC2/Route 53 rights."
     if "SSL" in s or "CERTIFICATE_VERIFY_FAILED" in s:
@@ -62,6 +65,24 @@ def explain(e: Exception) -> str:
     if "Could not connect" in s or "EndpointConnectionError" in type(e).__name__:
         return "Couldn't reach AWS. Check this laptop's network or Client Connector connection."
     return s[:500]
+
+
+def find_connector_ami(sess) -> list[dict]:
+    """Zscaler App Connector AMIs from AWS Marketplace in this region, newest first. You still have to accept the
+    Marketplace subscription once, or EC2 refuses to launch it (OptInRequired)."""
+    ec2 = sess.client("ec2")
+    seen, out = set(), []
+    for pat in ("*zpa-connector*", "*ZPA*Connector*", "*Zscaler*App*Connector*"):
+        try:
+            imgs = ec2.describe_images(Owners=["aws-marketplace"], Filters=[{"Name": "name", "Values": [pat]},
+                                                                           {"Name": "state", "Values": ["available"]}])
+        except Exception as e:
+            raise AwsError(explain(e))
+        for i in imgs.get("Images", []):
+            if i["ImageId"] not in seen and "arm64" not in i.get("Architecture", ""):
+                seen.add(i["ImageId"])
+                out.append({"id": i["ImageId"], "name": i.get("Name", ""), "created": i.get("CreationDate", "")})
+    return sorted(out, key=lambda x: x["created"], reverse=True)
 
 
 def whoami(sess) -> dict:

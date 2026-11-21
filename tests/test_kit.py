@@ -140,7 +140,8 @@ class ZiaTests(unittest.TestCase):
 class FakeZpaSession:
     """requests.Session stand-in for the ZPA API."""
     def __init__(self):
-        self.store = {"segmentGroup": [], "serverGroup": [], "application": [], "rule": []}
+        self.store = {"segmentGroup": [], "serverGroup": [], "application": [], "rule": [], "keys": [],
+                      "connector": []}
         self.groups = [{"id": "500", "name": "AWS Quick demo", "enabled": True, "connectors": [{"id": 1}]}]
         self.n, self.calls = 100, []
 
@@ -155,11 +156,28 @@ class FakeZpaSession:
                 s.status_code, s._o, s.text = code, obj, json.dumps(obj) if obj is not None else ""
             def json(s):
                 return s._o
-        if path == "/appConnectorGroup":
-            return R({"totalPages": 1, "list": self.groups})
+        if path == "/enrollmentCert":
+            return R({"totalPages": 1, "list": [{"id": "2519", "name": "Connector"}, {"id": "9", "name": "Root"}]})
+        if path.startswith("/appConnectorGroup"):
+            if method == "GET":
+                return R({"totalPages": 1, "list": self.groups})
+            if method == "POST":
+                self.n += 1
+                obj = dict(body, id=str(self.n)); self.groups.append(obj)
+                return R(obj)
+            if method == "DELETE":
+                i = path.split("/")[-1]
+                self.groups[:] = [g for g in self.groups if g["id"] != i]
+                return R(None, 204)
+        if "/provisioningKey" in path:
+            lst = self.store["keys"]
+            if method == "POST":
+                self.n += 1
+                obj = dict(body, id=str(self.n), provisioningKey="3|api.private.zscaler.com|FAKEKEY"); lst.append(obj)
+                return R(obj)
         if path == "/policySet/policyType/ACCESS_POLICY":
             return R({"id": "PS1"})
-        key = "rule" if "/rule" in path else path.strip("/").split("/")[0]
+        key = "rule" if "/rule" in path else "keys" if "/provisioningKey" in path else path.strip("/").split("/")[0]
         lst = self.store[key]
         if method == "GET":
             return R({"totalPages": 1, "list": lst})
@@ -192,9 +210,34 @@ class ZpaTests(unittest.TestCase):
         self.assertEqual(rule["conditions"][0]["operands"][0], {"objectType": "APP", "values": [app["id"]]})
         self.assertTrue(any("/v2/" in c[1] and c[0] == "POST" for c in s.calls))   # access rules use the v2 API
         self.assertFalse(zpa_quick.setup(z, "eu-west-1", "500", apply=True, log=lambda m: None))   # idempotent
-        self.assertTrue(all(i["exists"] for i in zpa_quick.status(z)))
+        self.assertTrue(all(i["exists"] for i in zpa_quick.status(z) if "kit-created" not in i["type"]))
         self.assertTrue(zpa_quick.teardown(z, apply=True, log=lambda m: None))
         self.assertEqual(sum(len(v) for v in s.store.values()), 0)
+
+    def test_auto_connector_group_and_key(self):
+        import zpa_quick
+        s = FakeZpaSession()
+        z = zpa_quick.ZPA(s, "216196257331281920")
+        self.assertFalse(zpa_quick.setup(z, "us-east-1", "auto", apply=False, log=lambda m: None))
+        self.assertEqual(len(s.groups), 1)                                   # dry run creates nothing
+        self.assertTrue(zpa_quick.setup(z, "us-east-1", "auto", apply=True, log=lambda m: None))
+        grp = next(g for g in s.groups if g["name"] == zpa_quick.GROUP_NAME)
+        self.assertEqual(grp["enrollmentCertId"], "2519")
+        self.assertEqual(grp["countryCode"], "US")
+        k = s.store["keys"][0]
+        self.assertEqual((k["zcomponentId"], k["enrollmentCertId"]), (grp["id"], "2519"))
+        self.assertTrue(any("/associationType/CONNECTOR_GRP/provisioningKey" in c[1] for c in s.calls))
+        self.assertEqual(s.store["serverGroup"][0]["appConnectorGroups"], [{"id": grp["id"]}])
+        # reuse: same key back, no second group
+        self.assertEqual(zpa_quick.ensure_provisioning_key(z, grp["id"], True, lambda m: None),
+                         "3|api.private.zscaler.com|FAKEKEY")
+        self.assertEqual(zpa_quick.ensure_connector_group(z, "us-east-1", True, lambda m: None), grp["id"])
+        self.assertEqual(len(s.store["keys"]), 1)
+        grp["connectors"] = [{"id": "77", "name": "quick-demo-ac"}]
+        self.assertTrue(zpa_quick.teardown(z, apply=True, log=lambda m: None))
+        self.assertEqual([g["name"] for g in s.groups], ["AWS Quick demo"])   # SE's own group untouched
+        self.assertEqual(s.store["keys"], [])
+        self.assertTrue(any(c[0] == "DELETE" and c[1].endswith("/connector/77") for c in s.calls))
 
     def test_bad_customer_id(self):
         import zpa_quick
