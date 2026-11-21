@@ -740,5 +740,27 @@ class UpdaterGitTests(unittest.TestCase):
         self.assertEqual(updater.apply(root / "se", root / "bk", "0.5.2", log=lambda m: None), "0.5.2")
 
 
+class CloudShareKeyTests(unittest.TestCase):
+    def test_pasted_whitespace_is_trimmed_and_hmac_error_explained(self):
+        import cs_runner
+        seen = []
+
+        def fake_request(method, url, headers=None, data=None, timeout=None, verify=None):
+            seen.append(headers["Authorization"])
+            body = '{"message":"HMAC doesn\'t match input data","code":"0x50017"}'
+            return types.SimpleNamespace(status_code=500, text=body, json=lambda: json.loads(body))
+        orig = cs_runner.requests.request
+        cs_runner.requests.request = fake_request
+        try:
+            cs = cs_runner.CloudShare(" JLUXXLF2XZM9CAKJ ", "SECRETKEY\n")
+            self.assertEqual((cs.api_id, cs.api_key), ("JLUXXLF2XZM9CAKJ", "SECRETKEY"))
+            with self.assertRaises(cs_runner.CloudShareError) as e:
+                cs.envs()
+            self.assertIn("doesn't match the API ID", str(e.exception))
+            self.assertIn("userapiid:JLUXXLF2XZM9CAKJ;", seen[0])
+        finally:
+            cs_runner.requests.request = orig
+
+
 if __name__ == "__main__":
     unittest.main()

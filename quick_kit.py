@@ -54,7 +54,7 @@ import quick_setup  # noqa: E402
 import updater  # noqa: E402
 import zpa_quick  # noqa: E402
 
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 HOME = pathlib.Path(os.environ.get("QUICK_KIT_HOME", pathlib.Path.home() / ".quick-se-kit"))
 CFG_FILE = HOME / "config.json"
 LOG_FILE = HOME / "kit.log"
@@ -718,7 +718,7 @@ def cmd_gui(port: int = 8770, open_browser: bool = True) -> None:
                         c["cloudshare"] = cs
                     if b.get("cs_key"):
                         try:
-                            set_secret(b["cs_key"], "cloudshare_api_key")
+                            set_secret(b["cs_key"].strip(), "cloudshare_api_key")
                         except Exception as e:
                             raise ValueError(f"Couldn't save the CloudShare key to the OS keychain: {e}")
                     if b.get("zpa") is not None:

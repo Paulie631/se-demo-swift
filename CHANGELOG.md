@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.4
+- CloudShare: pasted API IDs and keys are trimmed (a stray space or line break breaks the signature), and "HMAC doesn't match" now says plainly that the key doesn't match the API ID and how to fix it. (Signing verified identical to CloudShare's official SDK.)
+
 ## 0.5.3
 - The update check sees a new version immediately. Git checkouts check with `git fetch`; other copies use GitHub's API before the file server, which caches files for about 5 minutes and could report "up to date" right after a release.
 

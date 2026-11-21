@@ -47,7 +47,8 @@ class CloudShare:
     def __init__(self, api_id: str, api_key: str, verify=True):
         if not api_id or not api_key:
             raise CloudShareError("Add your CloudShare API ID and API key (CloudShare › My Account › API Credentials).")
-        self.api_id, self.api_key, self.verify = api_id, api_key, verify
+        # stray spaces/newlines from copy-paste change the HMAC, so trim them
+        self.api_id, self.api_key, self.verify = api_id.strip(), api_key.strip(), verify
 
     def req(self, method: str, path: str, params: dict | None = None, body: dict | None = None):
         url = f"https://{HOST}/api/v3/{path.strip('/')}"
@@ -60,6 +61,11 @@ class CloudShare:
                                  timeout=30, verify=self.verify)
         except requests.RequestException as e:
             raise CloudShareError(f"Couldn't reach {HOST} ({e.__class__.__name__}).")
+        if "HMAC doesn't match" in r.text or "0x50017" in r.text:
+            raise CloudShareError("CloudShare says the API key doesn't match the API ID. In CloudShare › My Account › "
+                                  "API Credentials, copy the API ID and API key again (both from the same page; if you "
+                                  "regenerated credentials, the old key stops working), paste the key into API key and "
+                                  "press Save & load environments.")
         if r.status_code in (401, 403):
             raise CloudShareError("CloudShare rejected the API credentials (check the API ID and key).")
         if r.status_code >= 400:
