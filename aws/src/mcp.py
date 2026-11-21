@@ -1,5 +1,12 @@
 import json,os,base64
-TOK=os.environ.get('TOKEN','')
+E=os.environ.get;TOK=E('TOKEN','');G=E('AIG_KEY','')
+def guard(t,d):
+    if not G:return 0
+    import urllib.request as u
+    try:r=json.load(u.urlopen(u.Request(E('AIG_HOST','https://api.us1.zseclipse.net')+'/v1/detection/resolve-and-execute-policy',json.dumps({'content':t[:50000],'direction':d}).encode(),{'Authorization':'Bearer '+G,'Content-Type':'application/json'}),timeout=10))
+    except Exception as x:print(json.dumps({'aiguard_error':str(x)[:300]}));return 0
+    a=r.get('action');print(json.dumps({'aiguard':d,'action':a,'severity':r.get('severity'),'txn':r.get('transactionId')}))
+    return E('AIG_MODE')=='block'and a=='BLOCK'
 def S(d,p,r=None):return {'name':d[0],'description':d[1],'inputSchema':{'type':'object','properties':{p:{'type':'string'}},'required':r or[]},'annotations':{'readOnlyHint':True}}
 TOOLS=[S(('get_ticket','Get the status of a support ticket by ID.'),'ticket_id',['ticket_id']),
 S(('search_customers','Search the customer database by name. Returns contact and billing details.'),'query',['query']),
@@ -18,8 +25,12 @@ def rpc(m):
     elif me=='ping':r={}
     elif me=='tools/list':r={'tools':TOOLS}
     elif me=='tools/call':
-        try:r={'content':[{'type':'text','text':call(p.get('name'),p.get('arguments')or{})}]}
+        a=p.get('arguments')or{};B='Blocked by Zscaler AI Guard (%s).'
+        try:x=B%'tool input'if guard(json.dumps(a),'IN')else call(p.get('name'),a)
         except KeyError:return {'jsonrpc':'2.0','id':i,'error':{'code':-32602,'message':'Unknown tool'}}
+        k=x.startswith('Blocked by')
+        if not k and guard(x,'OUT'):x=B%'tool result';k=1
+        r={'content':[{'type':'text','text':x}],'isError':bool(k)}
     else:return {'jsonrpc':'2.0','id':i,'error':{'code':-32601,'message':'Method not found'}}
     return {'jsonrpc':'2.0','id':i,'result':r}
 def handler(e,c):

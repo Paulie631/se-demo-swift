@@ -94,12 +94,41 @@ body.present .notes,body.present .presenter{display:none}
   <button id="quit" title="Stop the console">Quit</button>
 </header>
 <nav class="tabs" id="tabs">
+  <button data-v="all">Deploy all</button>
   <button data-v="setup" class="on">Setup</button>
   <button data-v="demo">Guided demo</button>
   <button data-v="traffic">Traffic</button>
   <button data-v="aws">AWS environment</button>
   <button data-v="logs">Logs</button>
 </nav>
+
+<!-- ============================== DEPLOY ALL ============================== -->
+<section class="view" id="v-all"><div class="wrap stack">
+  <div class="banner warn">Demo and eval tenants and a demo AWS account only. Each step can also be run on its own tab.</div>
+  <div class="grid">
+    <div class="panel">
+      <h2>Deploy everything</h2>
+      <p>Runs every piece that's configured, in order. Steps that aren't set up yet are skipped (with the reason); a failed step doesn't stop the rest.</p>
+      <div id="allsteps" class="stack" style="gap:4px;margin:10px 0"></div>
+      <div class="field"><span class="lbl">Test user email (created in ZIdentity or ZIA if it doesn't exist; leave blank to keep the current scope)</span><input type="text" id="alluser" placeholder="quick.demo@yourdemodomain.com"></div>
+      <div class="field"><span class="lbl">DSPM quick-create link (optional; from the DSPM console's AWS onboarding)</span><input type="text" id="alldspm" placeholder="https://us-east-1.console.aws.amazon.com/cloudformation/home?…#/stacks/quickcreate?templateURL=…"></div>
+      <div class="row"><button class="primary" id="allrun">Deploy everything</button><span class="hint" id="allhint"></span></div>
+      <div class="err" id="allerr"></div>
+    </div>
+    <div class="panel">
+      <h2>Progress</h2>
+      <table id="alltable" style="display:none"><thead><tr><th>Step</th><th>Result</th></tr></thead><tbody></tbody></table>
+      <pre class="out" id="alllog" style="display:none;max-height:360px;overflow:auto"></pre>
+      <h3 style="margin-top:16px">Still by hand</h3>
+      <ol class="steps">
+        <li>Amazon Quick sign-up (it becomes a paid subscription), then pick the Quick owner on the AWS tab.</li>
+        <li>The MCP connector in Quick (no API for it yet): AWS tab, section 2 E.</li>
+        <li>One sign-in to Client Connector on the CloudShare VM as the test user.</li>
+        <li>DSPM: add the AWS account in the DSPM console (it gives you the link above), then Validate after the stack is up.</li>
+      </ol>
+    </div>
+  </div>
+</div></section>
 
 <!-- ============================== SETUP ============================== -->
 <section class="view on" id="v-setup"><div class="wrap">
@@ -126,7 +155,7 @@ body.present .notes,body.present .presenter{display:none}
       </div>
       <div id="userbox" style="display:none">
         <div class="row"><input type="text" id="uemail" placeholder="Test user's email address" style="flex:1;min-width:200px"><button id="usave">Save user</button></div>
-        <p class="hint" style="margin:6px 0 0">Uses the user if it exists. If not, the kit offers to create it (tenants with ZIA-hosted users). Sign in to Client Connector on the demo machine as this user. <a href="#" id="upw" style="display:none">Show password</a> <span id="upwout"></span></p>
+        <p class="hint" style="margin:6px 0 0">Uses the user if it exists. If not, the kit offers to create it (in ZIdentity, or in ZIA on tenants with ZIA-hosted users). Sign in to Client Connector on the demo machine as this user. <a href="#" id="upw" style="display:none">Show password</a> <span id="upwout"></span></p>
       </div>
       <div class="row" style="margin-top:12px"><button class="primary" id="apply">Set up ZIA policy</button><button class="danger" id="teardown">Remove</button><span class="hint" id="scope"></span></div>
       <div id="stable" style="margin-top:12px"></div>
@@ -162,6 +191,21 @@ body.present .notes,body.present .presenter{display:none}
       <table id="zpatable" style="margin-top:12px;display:none"><thead><tr><th>Object</th><th>Type</th><th>State</th></tr></thead><tbody></tbody></table>
       <pre class="out" id="zpaout" style="display:none"></pre>
       <div class="err" id="zpaerr"></div>
+    </div>
+    <div class="panel">
+      <h2>5 · AI Guard in front of the MCP server (optional)</h2>
+      <p>Creates an AI Guard app "Amazon Quick MCP (Demo)", a detection key and a rule that sends it to the policy below. The next AWS deploy hands the key to the MCP server, which then scans every tool call's input and output.</p>
+      <div class="row"><div class="field" style="flex:2"><span class="lbl">AI Guard policy</span><select id="aigpol"><option value="">Load policies first</option></select></div>
+        <div class="field" style="flex:1"><span class="lbl">Mode</span><select id="aigmode"><option value="block">Block</option><option value="monitor">Monitor only</option></select></div></div>
+      <details><summary class="hint">Advanced</summary><div class="field" style="margin-top:8px"><span class="lbl">Detection API host for your cloud</span><input type="text" id="aighost" placeholder="https://api.us1.zseclipse.net"></div></details>
+      <div class="row">
+        <button id="aigload">Load policies</button><button id="aigstatus">Check status</button>
+        <button class="primary" id="aigapply">Set up AI Guard</button><button id="aigtest">Test scan</button><button class="danger" id="aigdel">Remove</button>
+      </div>
+      <p class="hint" style="margin-top:8px">The OneAPI client needs the AI Guard scope. The key is kept in your keychain and passed to AWS as a hidden parameter. Redeploy the AWS stack after setting this up.</p>
+      <div id="aigres"></div>
+      <pre class="out" id="aigout" style="display:none"></pre>
+      <div class="err" id="aigerr"></div>
     </div>
   </div>
 </div></section>
@@ -204,6 +248,15 @@ body.present .notes,body.present .presenter{display:none}
           </div>
         </div>
       </div>
+      <details style="margin-top:12px"><summary><b>Install Client Connector on this VM</b></summary>
+        <div class="row" style="margin-top:8px">
+          <div class="field" style="flex:1"><span class="lbl">Tenant cloud name</span><input type="text" id="zcccloud" placeholder="zscalertwo"></div>
+          <div class="field" style="flex:1"><span class="lbl">Sign-in domain (default: the test user's)</span><input type="text" id="zccdom" placeholder="yourdemodomain.com"></div>
+        </div>
+        <div class="field"><span class="lbl">Installer link (.msi; default is a public build, or copy one from Client Connector Portal › App Store)</span><input type="text" id="zccmsi" placeholder="https://…/Zscaler-windows-…-installer-x64.msi"></div>
+        <div class="row"><button id="zccinst">Install if missing</button><button id="zccforce">Reinstall</button></div>
+        <p class="hint" style="margin-top:6px">Installs silently with the cloud and domain preset. Then open the VM in CloudShare and sign in once as the test user (Setup tab › Show password).</p>
+      </details>
       <div id="csout"></div>
       <div class="err" id="cserr"></div>
       <p class="hint" style="margin-top:10px">The console asks CloudShare to run a short PowerShell command on the VM. The first run installs uv, Python 3.12 and the kit under <code>C:\SE-Demo</code> (about 2 minutes); later runs take seconds. Nothing with fake PII is sent from this laptop.</p>
@@ -293,6 +346,14 @@ body.present .notes,body.present .presenter{display:none}
       <div id="mcpres"></div>
       <div class="err" id="mcperr"></div>
     </div>
+    <div class="panel">
+      <h2>4 · DSPM onboarding (optional)</h2>
+      <p>In the DSPM console, add this AWS account. It gives you a CloudFormation "Launch stack" link. Paste it here and the kit deploys that stack into the demo account with the same AWS credentials, so DSPM can discover and scan the demo bucket.</p>
+      <div class="field"><span class="lbl">DSPM quick-create link (or the template's https URL)</span><input type="text" id="dspmlink"></div>
+      <div class="row"><button class="primary" id="dspmdeploy">Deploy DSPM stack</button><button class="danger" id="dspmdel">Delete it</button><span class="hint" id="dspmstate"></span></div>
+      <pre class="out" id="dspmlog" style="display:none"></pre>
+      <div class="err" id="dspmerr"></div>
+    </div>
   </div>
 </div></section>
 
@@ -340,6 +401,13 @@ async function loadCfg(){
   const a=CFG.aws||{};if(a.project)$("#proj").value=a.project;if(a.region)$("#awsregion").value=a.region;
   if(a.zpa){$("#zpa").checked=true;$("#zpaopts").style.display=""}if(a.ami)$("#ami").value=a.ami;if(a.keypair)$("#keypair").value=a.keypair;if(a.instance_type)$("#itype").value=a.instance_type;
   cfnLink();
+  const g=CFG.aiguard||{};$("#aigmode").value=g.mode||"block";if(g.host&&g.host!=="https://api.us1.zseclipse.net")$("#aighost").value=g.host;
+  if(g.policy&&!$("#aigpol").querySelector(`option[value="${g.policy}"]`))$("#aigpol").innerHTML=`<option value="${esc(g.policy)}">${esc(g.policy_name||g.policy)}</option>`;
+  if(g.policy)$("#aigpol").value=String(g.policy);
+  const zc=CFG.zcc||{};if(zc.cloud)$("#zcccloud").value=zc.cloud;if(zc.domain)$("#zccdom").value=zc.domain;if(zc.msi)$("#zccmsi").value=zc.msi;
+  const da=CFG.deploy_all||{};if(da.test_user&&!$("#alluser").value)$("#alluser").value=da.test_user;if(da.dspm_link&&!$("#alldspm").value)$("#alldspm").value=da.dspm_link;
+  const ds=CFG.dspm||{};if(ds.link&&!$("#dspmlink").value)$("#dspmlink").value=ds.link;
+  $("#dspmstate").textContent=ds.stack?`Stack ${ds.stack}: ${ds.status||"?"}`:"";
   const cs=CFG.cloudshare||{};$("#csid").value=cs.api_id||"";$("#csrepo").value=cs.repo||"";$("#csref").value=cs.ref||"";
   $("#cskeystate").textContent=CFG.cs_has_key?"saved in keychain":"not saved";$("#cskeystate").className="pill "+(CFG.cs_has_key?"ok":"");
   setSrc(CFG.traffic_source||"laptop");
@@ -392,6 +460,68 @@ $("#usave").onclick=e=>busy(e.target,async()=>{$("#ziaerr").textContent="";const
 $("#upw").onclick=async ev=>{ev.preventDefault();try{const r=await api("/api/zia/password");$("#upwout").innerHTML=`Password: <code>${esc(r.password)}</code> <button id="upwcopy">Copy</button>`;
   $("#upwcopy").onclick=()=>navigator.clipboard.writeText(r.password);setTimeout(()=>$("#upwout").textContent="",60000)}catch(err){$("#ziaerr").textContent=err.message}};
 $("#sslrule").onchange=e=>api("/api/config",{ssl:e.target.checked}).catch(()=>{});
+
+// ---------------- jobs (generic)
+async function runJob(path,body,L){
+  L.style.display="";L.textContent="Starting…";
+  const {job}=await api(path,body);
+  for(;;){await sleep(3000);const j=await api("/api/jobs?id="+job);L.textContent=(j.log||[]).join("\n")+`\n… ${j.elapsed||0}s`;L.scrollTop=L.scrollHeight;
+    if(j.state==="done")return j.result;if(j.state==="error")throw new Error(j.error)}}
+
+// ---------------- deploy all
+const STEPS=[["user","Test user (ZIdentity or ZIA)"],["zia","ZIA policy"],["zpa","ZPA objects + connector group + key"],["aiguard","AI Guard app, key and rule"],["aws","AWS stack (key and AMI handed over)"],["quick","Quick knowledge base and space"],["zcc","Client Connector on the CloudShare VM"],["dspm","DSPM onboarding stack"],["traffic","Demo traffic from the VM"]];
+function renderSteps(){const off=JSON.parse(localStorage.getItem("qk-alloff")||"[]");
+  $("#allsteps").innerHTML=STEPS.map(([k,l])=>`<label class="check"><input type="checkbox" data-step="${k}" ${off.includes(k)?"":"checked"}> ${esc(l)}</label>`).join("");
+  $$("[data-step]").forEach(c=>c.onchange=()=>{try{localStorage.setItem("qk-alloff",JSON.stringify($$("[data-step]").filter(x=>!x.checked).map(x=>x.dataset.step)))}catch(e){}})}
+try{renderSteps()}catch(e){}
+$("#allrun").onclick=e=>busy(e.target,async()=>{$("#allerr").textContent="";
+  const steps=$$("[data-step]").filter(x=>x.checked).map(x=>x.dataset.step);
+  if(!steps.length){$("#allerr").textContent="Tick at least one step.";return}
+  if(!confirm("Run: "+steps.join(", ")+"?\nThis changes your demo tenant and deploys to your AWS account."))return;
+  try{await api("/api/config",{deploy_all:{test_user:$("#alluser").value,dspm_link:$("#alldspm").value}});
+    const r=await runJob("/api/deploy-all",{steps},$("#alllog"));
+    const tb=$("#alltable");tb.style.display="";
+    tb.querySelector("tbody").innerHTML=r.steps.map(s=>`<tr><td>${esc(s.label)}</td><td><span class="pill ${s.result==="ok"?"ok":s.result==="failed"?"bad":""}">${esc(s.result)}</span> <span class="hint">${esc(s.detail||"")}</span></td></tr>`).join("");
+    $("#allhint").textContent=r.failed?`${r.failed} step(s) failed: see the detail and the Logs tab`:"Done";await loadCfg()}
+  catch(err){$("#allerr").textContent=err.message}});
+
+// ---------------- AI Guard
+function aigShow(t){const o=$("#aigout");o.style.display="";o.textContent=t}
+const aigSave=()=>{const o=$("#aigpol").selectedOptions[0];return api("/api/config",{aiguard:{policy:$("#aigpol").value,policy_name:o&&o.value?o.textContent:"",mode:$("#aigmode").value,...($("#aighost").value?{host:$("#aighost").value}:{})}})};
+$("#aigload").onclick=e=>busy(e.target,async()=>{$("#aigerr").textContent="";
+  try{const {policies}=await api("/api/aiguard/policies");const cur=(CFG.aiguard||{}).policy||"";
+    $("#aigpol").innerHTML='<option value="">Pick for me (SE kit or Default policy)</option>'+policies.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");$("#aigpol").value=String(cur)}
+  catch(err){$("#aigerr").textContent=err.message}});
+$("#aigstatus").onclick=e=>busy(e.target,async()=>{$("#aigerr").textContent="";
+  try{const r=await api("/api/aiguard/status");
+    $("#aigres").innerHTML=`<table style="margin-top:10px"><tbody>${r.items.map(i=>`<tr><td>${esc(i.name)}</td><td>${esc(i.type)}</td><td>${i.exists?'<span class="pill ok">present</span>':'<span class="pill">missing</span>'} <span class="hint">${esc(i.detail||"")}</span></td></tr>`).join("")}<tr><td>Detection key</td><td>Keychain</td><td>${r.has_key?'<span class="pill ok">saved</span>':'<span class="pill">none</span>'}</td></tr></tbody></table>`}
+  catch(err){$("#aigerr").textContent=err.message}});
+$("#aigapply").onclick=e=>{if(!confirm("Create the AI Guard app, detection key and policy rule now?"))return;busy(e.target,async()=>{$("#aigerr").textContent="";
+  try{await aigSave();const r=await api("/api/aiguard/run",{apply:true});aigShow(r.output);await loadCfg();$("#aigstatus").click()}catch(err){$("#aigerr").textContent=err.message}})};
+$("#aigdel").onclick=e=>{if(!confirm("Delete the kit's AI Guard rule, detection key and app?"))return;busy(e.target,async()=>{$("#aigerr").textContent="";
+  try{const r=await api("/api/aiguard/run",{apply:true,teardown:true});aigShow(r.output);await loadCfg();$("#aigstatus").click()}catch(err){$("#aigerr").textContent=err.message}})};
+$("#aigtest").onclick=e=>busy(e.target,async()=>{$("#aigerr").textContent="";
+  try{await aigSave();const r=await api("/api/aiguard/test",{});aigShow(`Sample injection prompt → ${r.action} (${r.severity||"no severity"})\nDetectors: ${(r.detectors||[]).join(", ")||"none triggered"}\nTransaction: ${r.transactionId||""}`)}catch(err){$("#aigerr").textContent=err.message}});
+$("#aigmode").onchange=()=>aigSave().then(loadCfg).catch(()=>{});
+
+// ---------------- ZCC on CloudShare
+const zccRun=action=>e=>{if(action==="zcc-force"&&!confirm("Reinstall Client Connector on the VM? It may drop the VM's connection for a minute."))return;
+  busy(e.target,async()=>{$("#cserr").textContent="";
+    try{await api("/api/config",{zcc:{cloud:$("#zcccloud").value,domain:$("#zccdom").value,msi:$("#zccmsi").value}});
+      $("#csout").innerHTML='<p class="hint">Installing Client Connector on the VM (a few minutes)…</p>';
+      const r=await csJob({action},()=>{});
+      $("#csout").innerHTML=`<p style="margin-top:10px"><span class="pill ok">Client Connector ${esc(r.after)}</span> <span class="hint">${esc(r.version||"")} · before: ${esc(r.before)}${r.msi_exit!=null?" · msiexec exit "+r.msi_exit:""}</span></p>`}
+    catch(err){$("#csout").innerHTML="";$("#cserr").textContent=err.message}})};
+$("#zccinst").onclick=zccRun("zcc");$("#zccforce").onclick=zccRun("zcc-force");
+
+// ---------------- DSPM
+$("#dspmdeploy").onclick=e=>{if(!$("#dspmlink").value.trim()){$("#dspmerr").textContent="Paste the link from the DSPM console first.";return}
+  if(!confirm("Deploy the DSPM onboarding stack into the demo AWS account? It creates the IAM roles DSPM asks for."))return;
+  busy(e.target,async()=>{$("#dspmerr").textContent="";
+    try{await saveAws();const r=await runJob("/api/dspm/deploy",{link:$("#dspmlink").value.trim()},$("#dspmlog"));$("#dspmlog").textContent+=`\nDone: ${r.status}. Now click Validate in the DSPM console.`;await loadCfg()}
+    catch(err){$("#dspmerr").textContent=err.message}})};
+$("#dspmdel").onclick=e=>{if(!confirm("Delete the DSPM onboarding stack? DSPM loses access to the account."))return;
+  busy(e.target,async()=>{$("#dspmerr").textContent="";try{await runJob("/api/dspm/delete",{},$("#dspmlog"));await loadCfg()}catch(err){$("#dspmerr").textContent=err.message}})};
 
 // ---------------- ZPA
 function zpaShow(t){const o=$("#zpaout");o.style.display="";o.textContent=t}

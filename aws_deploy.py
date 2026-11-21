@@ -85,6 +85,30 @@ def find_connector_ami(sess) -> list[dict]:
     return sorted(out, key=lambda x: x["created"], reverse=True)
 
 
+def parse_quick_create(link: str) -> dict:
+    """A CloudFormation quick-create link (what the DSPM console's 'Deploy' button opens):
+    https://<region>.console.aws.amazon.com/cloudformation/home?region=R#/stacks/quickcreate?templateURL=...&stackName=..&param_X=..
+    -> {"region", "template_url", "stack_name", "params"}"""
+    from urllib.parse import parse_qsl, urlsplit
+    link = (link or "").strip()
+    u = urlsplit(link)
+    if not u.scheme.startswith("http"):
+        raise AwsError("Paste the full 'Launch stack' / quick-create link from the DSPM console.")
+    q = dict(parse_qsl(u.query))
+    frag = u.fragment.split("?", 1)
+    q.update(dict(parse_qsl(frag[1])) if len(frag) > 1 else {})
+    tpl = q.get("templateURL") or q.get("templateUrl") or ""
+    if not tpl and link.split("?")[0].endswith((".yaml", ".yml", ".json", ".template")):
+        tpl = link   # a bare template URL also works
+    if not tpl.startswith("https://"):
+        raise AwsError("That link has no templateURL. In the DSPM console, copy the CloudFormation quick-create link "
+                       "(or the template's S3 URL).")
+    region = q.get("region") or (u.netloc.split(".")[0] if u.netloc.endswith("console.aws.amazon.com")
+                                 and u.netloc.count(".") > 3 else "")
+    return {"region": region, "template_url": tpl, "stack_name": q.get("stackName") or "zscaler-dspm",
+            "params": {k[6:]: v for k, v in q.items() if k.startswith("param_")}}
+
+
 def whoami(sess) -> dict:
     try:
         i = sess.client("sts").get_caller_identity()
@@ -167,12 +191,14 @@ def wait(sess, name: str, since: float, progress=None, timeout: int = 1800, poll
         time.sleep(poll)
 
 
-def deploy(sess, name: str, template: str, params: dict, progress=None) -> dict:
+def deploy(sess, name: str, template: str, params: dict, progress=None, template_url: str = "",
+           purpose: str = "zscaler-quick-demo") -> dict:
     """Create the stack, or update it if it exists. params: {ParameterKey: value}; empty values are skipped."""
     cf = sess.client("cloudformation")
     p = [{"ParameterKey": k, "ParameterValue": str(v)} for k, v in params.items() if v not in (None, "")]
-    common = dict(StackName=name, TemplateBody=template, Parameters=p, Capabilities=["CAPABILITY_IAM"],
-                  Tags=[{"Key": "Purpose", "Value": "zscaler-quick-demo"}])
+    common = dict(StackName=name, Parameters=p, Capabilities=["CAPABILITY_IAM"] + (["CAPABILITY_NAMED_IAM"] if template_url else []),
+                  Tags=[{"Key": "Purpose", "Value": purpose}])
+    common.update({"TemplateURL": template_url} if template_url else {"TemplateBody": template})
     since = time.time() - 5
     sid = ""
     existing = stack(sess, name)

@@ -25,10 +25,11 @@ Then, in the console:
 
 | Tab | What it's for |
 |---|---|
-| **Setup** | Connect with OneAPI (secrets in the OS keychain). **ZIA:** a custom URL category for Quick's domains, an **SSL inspection** (decrypt) rule, a **Caution** coaching rule and a **Block** Web DLP rule (PCI / PII / GLBA), all optionally scoped to a **test user** the kit finds or creates. **ZPA (optional):** segment group, server group, an application segment for the Quick website and a Client Connector access rule, for the AWS stack's PrivateLink path. Check, preview, create or remove each. |
+| **Deploy all** | One button runs every configured step in order: test user (ZIdentity or ZIA), ZIA policy, ZPA (including the App Connector group and provisioning key), AI Guard, the AWS stack (key and AMI handed over automatically), the Quick knowledge base, Client Connector on the CloudShare VM, the DSPM onboarding stack and demo traffic. Unconfigured steps are skipped with the reason; a failure doesn't stop the rest. |
+| **Setup** | Connect with OneAPI (secrets in the OS keychain). **ZIA:** a custom URL category for Quick's domains, an **SSL inspection** (decrypt) rule, a **Caution** coaching rule and a **Block** Web DLP rule (PCI / PII / GLBA), all optionally scoped to a **test user** the kit finds or creates. **ZPA (optional):** segment group, server group, an application segment for the Quick website and a Client Connector access rule, for the AWS stack's PrivateLink path; the kit can create the App Connector group and provisioning key too. **AI Guard (optional):** an app, a detection key and a policy rule; the MCP server then scans every tool call's input and output (block or monitor). Test users are created in **ZIdentity** on ZIdentity/SAML tenants. Check, preview, create or remove each. |
 | **Guided demo** | 1 Discover · 2 Govern access · 3 Protect data in prompts · 4 Agentic Quick (extension, desktop app, MCP) · 5 The data Quick can see (DSPM) · 6 Build-time assurance (AI-SPM, red teaming, prompt hardening). About 35 minutes. ← → to move. |
-| **Traffic** | Quick-shaped requests through Client Connector: visibility, PII/PCI/secrets prompts and a fake customer CSV upload, with a result per request (blocked, passed, or a TLS problem with its fix). Works without a Quick account. **Send from** this laptop or a **CloudShare VM**, with a VM check and an optional schedule to keep dashboards fresh. |
-| **AWS environment** | **Deploy stack / Delete stack** straight from the console with an AWS CLI profile (SSO works after `aws sso login`) or access keys (secret in the keychain), with live progress and the stack outputs filled in. Or download the template and upload it yourself. Secrets (MCP token, ZPA key) go to AWS as hidden parameters and are never saved. Then **Set up knowledge base** creates the S3 knowledge base and a demo Space through the Quick API (Quick reads the bucket through the stack's QuickKbRole). The checklist covers the one manual step (the MCP connector) and runs a live check of the MCP server. |
+| **Traffic** | Quick-shaped requests through Client Connector: visibility, PII/PCI/secrets prompts and a fake customer CSV upload, with a result per request (blocked, passed, or a TLS problem with its fix). Works without a Quick account. **Send from** this laptop or a **CloudShare VM**, with a VM check, a silent **Client Connector install** on the VM, and an optional schedule to keep dashboards fresh. |
+| **AWS environment** | **Deploy stack / Delete stack** straight from the console with an AWS CLI profile (SSO works after `aws sso login`) or access keys (secret in the keychain), with live progress and the stack outputs filled in. Or download the template and upload it yourself. Secrets (MCP token, ZPA key) go to AWS as hidden parameters and are never saved. Then **Set up knowledge base** creates the S3 knowledge base and a demo Space through the Quick API (Quick reads the bucket through the stack's QuickKbRole). The checklist covers the one manual step (the MCP connector) and runs a live check of the MCP server. **DSPM:** paste the DSPM console's CloudFormation link and the kit deploys the onboarding stack in the demo account. |
 | **Logs** | Everything the kit did (secrets never logged). Full file: `~/.quick-se-kit/kit.log`. |
 
 ## Command line
@@ -43,6 +44,10 @@ Then, in the console:
 ./quick-kit aws deploy|status|delete|quick-setup|quick-teardown   AWS stack + Quick knowledge base (--profile, --region, --owner)
 ./quick-kit template          write the AWS template (--project, --zpa, --ami, --out)
 ./quick-kit mcp-test URL      check the deployed MCP server (--token)
+./quick-kit aiguard setup|status|test|teardown   AI Guard in front of the MCP server (--apply, --policy, --mode)
+./quick-kit zcc               install Client Connector on the CloudShare VM (--cloud, --domain, --msi, --force)
+./quick-kit dspm deploy LINK|delete   DSPM onboarding stack from the DSPM console's quick-create link
+./quick-kit deploy-all        every configured step (--steps, --test-user, --dspm-link)
 ./quick-kit install|uninstall desktop shortcut + ~/.quick-se-kit/app
 ```
 `zia_quick_setup.py` and `quick_traffic.py` still run on their own (environment variables `ZS_VANITY`, `ZS_CLIENT_ID`, `ZS_CLIENT_SECRET`).
@@ -61,6 +66,8 @@ Traffic goes to whichever tenant the sending machine's Client Connector is enrol
 See [aws/README.md](aws/README.md).
 
 ## Honest boundaries
+
+Still manual on purpose or for lack of an API: the Quick sign-up (it becomes a paid subscription), the MCP connector inside Quick, one Client Connector sign-in on the VM, and adding the AWS account in the DSPM console (which gives you the link the kit deploys).
 
 User and browser-extension traffic to Quick is inline with ZIA. Quick's cloud connectors, Flows browser tasks and Research web retrieval run from AWS to the other services, so they never pass through the user's ZIA connection. Cover those at the tool layer (AI Guard / AI Broker on the customer's own MCP servers and APIs) and the data layer (DSPM, SSPM). Before the call, confirm whether Amazon Quick is in the Cloud App catalog and prompt-extraction list, and the GA status of Endpoint AI Security and AI Broker.
 

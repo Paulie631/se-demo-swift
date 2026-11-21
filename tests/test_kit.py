@@ -119,12 +119,6 @@ class ZiaTests(unittest.TestCase):
         finally:
             qk.set_secret, qk.save_cfg = orig
 
-    def test_create_refused_for_idp_tenants(self):
-        self.z.auth = {"orgAuthType": "SAFECHANNEL_DIR", "samlEnabled": True}
-        with self.assertRaises(zqs.ZiaError) as e:
-            qk.zia_user({}, "create", "x@acme.example")
-        self.assertIn("SAML", str(e.exception))
-
     def test_find_existing_user(self):
         self.z.users.append({"id": 77, "email": "SE-Demo@Acme.example", "name": "SE-Demo Traffic"})
         orig = qk.save_cfg
@@ -283,7 +277,7 @@ class TemplateTests(unittest.TestCase):
         t = qk.build_template({"project": "acme-demo", "zpa": True, "ami": "ami-0123456789abcdef0"})
         self.assertIn("Default: 'acme-demo'", t)
         self.assertIn("Default: 'ami-0123456789abcdef0'", t)
-        self.assertEqual(t.count("NoEcho: true"), 2)
+        self.assertEqual(t.count("NoEcho: true"), 3)   # McpToken, AiGuardKey, ZpaProvisioningKey
 
     def test_untouched_when_zpa_off(self):
         t = qk.build_template({"project": "zs-quick-demo"})
@@ -803,6 +797,250 @@ class CloudShareKeyTests(unittest.TestCase):
             self.assertIn("userapiid:JLUXXLF2XZM9CAKJ;", seen[0])
         finally:
             cs_runner.requests.request = orig
+
+
+class _R:
+    def __init__(self, obj, code=200):
+        self.status_code, self._o = code, obj
+        self.text = json.dumps(obj) if obj is not None else ""
+        self.headers = {}
+
+    def json(self):
+        return self._o
+
+
+class FakeZidSession:
+    """ZIdentity: only the docs' colon spelling of the action endpoints exists, to exercise the fallback."""
+    def __init__(self):
+        self.users, self.calls, self.n = [], [], 10
+
+    def request(self, method, url, params=None, timeout=None, data=None, headers=None):
+        path = url.split("/ziam/admin/api/v1")[1]
+        body = json.loads(data) if data else None
+        self.calls.append((method, path, body))
+        if path == "/users" and method == "GET":
+            return _R({"records": [u for u in self.users if u["loginName"] == (params or {}).get("login_name")]})
+        if path == "/users" and method == "POST":
+            self.n += 1
+            u = dict(body, id=str(self.n)); self.users.append(u)
+            return _R(u)
+        if path.endswith(":updatepassword") or path.endswith(":setskipmfa"):
+            return _R("Success")
+        if method == "DELETE":
+            uid = path.split("/")[-1]
+            before = len(self.users)
+            self.users[:] = [u for u in self.users if u["id"] != uid]
+            return _R(None, 204 if len(self.users) < before else 404)
+        return _R({"detail": "not found"}, 404)
+
+
+class ZidTests(unittest.TestCase):
+    def test_create_password_delete(self):
+        import zid_users
+        s = FakeZidSession()
+        z = zid_users.ZID(s)
+        u, pw = z.create("quick.demo@example.com", log=lambda m: None)
+        self.assertEqual(u["loginName"], "quick.demo@example.com")
+        self.assertTrue(u["status"])
+        self.assertGreaterEqual(len(pw), 16)
+        pwcall = next(c for c in s.calls if c[1].endswith(":updatepassword"))
+        self.assertEqual(pwcall[2], {"password": pw, "resetPwdOnLogin": False})
+        self.assertTrue(any(c[1].endswith(":setskipmfa") for c in s.calls))
+        with self.assertRaises(zid_users.ZidError):
+            z.create("quick.demo@example.com", log=lambda m: None)
+        self.assertTrue(z.delete(u["id"], log=lambda m: None))
+        self.assertFalse(z.delete(u["id"], log=lambda m: None))
+
+    def test_zia_user_create_goes_to_zidentity_on_saml_tenants(self):
+        import zid_users
+        made = {}
+
+        class Z:
+            s = object()
+        orig = (qk.zia_connect, zqs.auth_mode, zid_users.ZID, zid_users.wait_for_zia, qk.set_secret)
+        try:
+            qk.zia_connect = lambda c: Z()
+            zqs.auth_mode = lambda z: "saml"
+
+            class FakeZID:
+                def __init__(self, s):
+                    pass
+
+                def create(self, email, log):
+                    made["email"] = email
+                    return {"id": "zid-1"}, "pw"
+            zid_users.ZID = FakeZID
+            zid_users.wait_for_zia = lambda *a, **k: {"id": 4242}
+            qk.set_secret = lambda v, n="": made.__setitem__(n, v)
+            cfg = {}
+            r = qk.zia_user(cfg, "create", "quick.demo@example.com")
+            self.assertEqual(r["user"]["id"], 4242)
+            self.assertEqual(r["user"]["created"], {"zid_id": "zid-1"})
+            self.assertEqual(made["zia_test_user_password"], "pw")
+        finally:
+            qk.zia_connect, zqs.auth_mode, zid_users.ZID, zid_users.wait_for_zia, qk.set_secret = orig
+
+
+class FakeAigSession:
+    def __init__(self):
+        self.st = {"/detections/policies": [{"id": 7, "name": "Default Policy"}, {"id": 9, "name": "AI Guard SE Kit policy"}],
+                   "/llm-applications": [], "/llm-application-credentials": [], "/detections/policy-match-rules": []}
+        self.n, self.calls = 100, []
+
+    def request(self, method, url, params=None, timeout=None, data=None, headers=None):
+        path = url.split("/aiguard/v1")[1]
+        body = json.loads(data) if data else None
+        self.calls.append((method, path, body))
+        coll = next(k for k in self.st if path == k or path.startswith(k + "/"))
+        lst = self.st[coll]
+        if method == "GET":
+            return _R({"items": [{k: v for k, v in x.items() if k != "key"} for x in lst]})   # list hides the key
+        if method == "POST":
+            self.n += 1
+            obj = dict(body, id=self.n)
+            if coll == "/llm-application-credentials":
+                obj["key"] = "aig-secret-key"
+            lst.append(obj)
+            return _R(obj)
+        oid = path.rsplit("/", 1)[1]
+        if method == "PUT":
+            for x in lst:
+                if str(x["id"]) == oid:
+                    x.update(body)
+            return _R(body)
+        if method == "DELETE":
+            lst[:] = [x for x in lst if str(x["id"]) != oid]
+            return _R(None, 204)
+
+
+class AiGuardTests(unittest.TestCase):
+    def test_setup_reuse_teardown(self):
+        import aiguard_quick as ag
+        s = FakeAigSession()
+        a = ag.AIG(s)
+        self.assertEqual(ag.setup(a, None, apply=False, log=lambda m: None)["key"], "")
+        self.assertEqual(s.st["/llm-applications"], [])
+        r = ag.setup(a, None, apply=True, log=lambda m: None)
+        self.assertEqual(r["key"], "aig-secret-key")
+        self.assertEqual(r["policy"]["id"], 9)   # prefers the AI Guard SE kit's policy
+        cred = s.st["/llm-application-credentials"][0]
+        self.assertEqual(cred["mode"], "DETECTIONS")
+        rule = s.st["/detections/policy-match-rules"][0]
+        self.assertEqual(rule["matchCriteria"]["type"], "DAS_APPLICATION")
+        self.assertEqual(rule["matchCriteria"]["llmApplications"][0]["applicationCredentialsIds"], [cred["id"]])
+        # second run: key comes from the keychain copy, nothing new is created
+        r2 = ag.setup(a, 7, apply=True, log=lambda m: None, saved_key="aig-secret-key")
+        self.assertEqual((r2["key"], r2["created"]), ("aig-secret-key", []))
+        self.assertEqual(s.st["/detections/policy-match-rules"][0]["policyId"], 7)
+        self.assertEqual(len(s.st["/llm-application-credentials"]), 1)
+        self.assertTrue(ag.teardown(a, apply=True, log=lambda m: None))
+        self.assertEqual(sum(len(s.st[k]) for k in s.st if k != "/detections/policies"), 0)
+
+
+class McpGuardTests(unittest.TestCase):
+    def _handler(self, env, verdicts):
+        import importlib.util
+        import urllib.request
+        os.environ.update(env)
+        spec = importlib.util.spec_from_file_location("mcp_g", ROOT / "aws" / "src" / "mcp.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        sent = []
+
+        class Resp:
+            def __init__(self, d):
+                self.d = d
+
+            def read(self, *a):
+                return json.dumps(self.d).encode()
+
+        def fake_urlopen(req, timeout=None):
+            b = json.loads(req.data)
+            sent.append(b["direction"])
+            return Resp({"action": verdicts.get(b["direction"], "ALLOW"), "severity": "HIGH"})
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        self.addCleanup(lambda: setattr(urllib.request, "urlopen", orig))
+        for k in env:
+            self.addCleanup(os.environ.pop, k, None)
+        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "get_vendor_profile", "arguments": {"vendor": "Acme"}}}
+        ev = {"requestContext": {"http": {"method": "POST"}}, "body": json.dumps(call), "headers": {}}
+        res = json.loads(m.handler(ev, None)["body"])["result"]
+        return res, sent
+
+    def test_block_on_output(self):
+        res, sent = self._handler({"AIG_KEY": "k", "AIG_MODE": "block"}, {"OUT": "BLOCK"})
+        self.assertEqual(sent, ["IN", "OUT"])
+        self.assertTrue(res["isError"])
+        self.assertIn("tool result", res["content"][0]["text"])
+
+    def test_block_on_input_skips_tool(self):
+        res, sent = self._handler({"AIG_KEY": "k", "AIG_MODE": "block"}, {"IN": "BLOCK"})
+        self.assertEqual(sent, ["IN"])
+        self.assertIn("tool input", res["content"][0]["text"])
+
+    def test_monitor_lets_it_through(self):
+        res, sent = self._handler({"AIG_KEY": "k", "AIG_MODE": "monitor"}, {"IN": "BLOCK", "OUT": "BLOCK"})
+        self.assertFalse(res["isError"])
+        self.assertIn("SYSTEM NOTE", res["content"][0]["text"])
+
+    def test_no_key_no_calls(self):
+        res, sent = self._handler({}, {})
+        self.assertEqual(sent, [])
+        self.assertFalse(res["isError"])
+
+
+class Phase4to6Tests(unittest.TestCase):
+    def test_quick_create_link(self):
+        import aws_deploy
+        q = aws_deploy.parse_quick_create(
+            "https://us-west-2.console.aws.amazon.com/cloudformation/home?region=us-west-2#/stacks/quickcreate?"
+            "templateURL=https%3A%2F%2Fzs-dspm.s3.amazonaws.com%2Fonboard.yaml&stackName=ZscalerDSPM&param_ExternalID=x1")
+        self.assertEqual(q, {"region": "us-west-2", "template_url": "https://zs-dspm.s3.amazonaws.com/onboard.yaml",
+                             "stack_name": "ZscalerDSPM", "params": {"ExternalID": "x1"}})
+        with self.assertRaises(aws_deploy.AwsError):
+            aws_deploy.parse_quick_create("https://example.com/no-template")
+
+    def test_zcc_command(self):
+        import base64
+        import cs_runner
+        cmd = cs_runner.zcc_command("zscalertwo.net", "example.com")
+        ps = base64.b64decode(cmd.split()[-1]).decode("utf-16-le")
+        self.assertIn("$Cloud='zscalertwo'", ps)
+        self.assertIn("CLOUDNAME=$Cloud", ps)
+        self.assertIn("QK_RESULT", ps)
+        for bad in (("zs two", ""), ("zscalertwo", "bad domain!"), ("zscalertwo", "", "http://x/zcc.msi")):
+            with self.assertRaises(cs_runner.CloudShareError):
+                cs_runner.zcc_command(*bad)
+
+    def test_deploy_all_skips_and_continues(self):
+        ran = []
+        names = ("zia_run", "zpa_run", "aig_run", "aws_deploy_stack", "quick_run", "cs_action", "dspm_deploy")
+        orig = {n: getattr(qk, n) for n in names}
+        try:
+            qk.zia_run = lambda *a, **k: ran.append("zia")
+            qk.zpa_run = lambda *a, **k: ran.append("zpa")
+
+            def boom(*a, **k):
+                raise ValueError("no AI Guard license")
+            qk.aig_run = boom
+            qk.aws_deploy_stack = lambda *a, **k: ran.append("aws") or {"status": "CREATE_COMPLETE"}
+            qk.quick_run = lambda *a, **k: ran.append("quick")
+            qk.cs_action = lambda *a, **k: ran.append("cs")
+            qk.dspm_deploy = lambda *a, **k: ran.append("dspm")
+            qk.save_cfg({"zpa": {"customer_id": "1"}, "aws": {"quick_owner": "arn:q"}})
+            r = qk.deploy_all(qk.load_cfg())
+            res = {s["step"]: s["result"] for s in r["steps"]}
+            self.assertEqual(res["aiguard"], "failed")
+            self.assertEqual((res["zia"], res["zpa"], res["aws"], res["quick"]), ("ok",) * 4)
+            self.assertEqual((res["zcc"], res["dspm"], res["traffic"], res["user"]), ("skipped",) * 4)
+            self.assertEqual(ran, ["zia", "zpa", "aws", "quick"])
+            self.assertEqual(r["failed"], 1)
+        finally:
+            for n, f in orig.items():
+                setattr(qk, n, f)
+            qk.save_cfg({})
 
 
 if __name__ == "__main__":

@@ -160,6 +160,50 @@ $o.scheduled=[bool](Get-ScheduledTask -TaskName 'SE-Demo Quick traffic' -ErrorAc
 """
 
 
+DEFAULT_ZCC_MSI = "https://d32a6ru7mhaq0c.cloudfront.net/Zscaler-windows-4.4.0.379-installer-x64.msi"
+
+ZCC_SCRIPT = r"""$ProgressPreference='SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+$o=[ordered]@{}
+$s=Get-Service -Name ZSAService -ErrorAction SilentlyContinue
+$o.before=if($s){"$($s.Status)"}else{'not installed'}
+if(-not $s -or $Force){
+  New-Item -ItemType Directory -Force -Path C:\SE-Demo | Out-Null
+  $msi='C:\SE-Demo\zcc.msi'
+  try{Invoke-WebRequest -UseBasicParsing $Url -OutFile $msi -TimeoutSec 600}catch{$o.error="download failed: $($_.Exception.Message)"}
+  if(-not $o.error){
+    $a="/i `"$msi`" /qn /norestart /l*v C:\SE-Demo\zcc-install.log CLOUDNAME=$Cloud"
+    if($Domain){$a+=" USERDOMAIN=$Domain"}
+    $p=Start-Process msiexec.exe -ArgumentList $a -Wait -PassThru
+    $o.msi_exit=$p.ExitCode
+    Start-Sleep 20
+  }
+}
+$s=Get-Service -Name ZSAService -ErrorAction SilentlyContinue
+$o.after=if($s){"$($s.Status)"}else{'not installed'}
+$v=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue|?{$_.DisplayName -like 'Zscaler*'}|select -First 1
+$o.version=if($v){$v.DisplayVersion}else{''}
+'QK_RESULT '+($o|ConvertTo-Json -Compress)
+"""
+
+
+def zcc_command(cloud: str, domain: str = "", msi_url: str = "", force: bool = False) -> str:
+    """Install Zscaler Client Connector silently, preset to this tenant's cloud and sign-in domain. ZCC still needs
+    one interactive sign-in on the VM (the test user's email and password)."""
+    import re
+    cloud = (cloud or "").strip().lower().replace(".net", "")
+    if not re.fullmatch(r"[a-z0-9]+", cloud):
+        raise CloudShareError("Enter the tenant's cloud name, e.g. zscalertwo.")
+    if domain and not re.fullmatch(r"[A-Za-z0-9.-]+", domain):
+        raise CloudShareError("The sign-in domain should look like example.com.")
+    url = (msi_url or DEFAULT_ZCC_MSI).strip()
+    if not url.lower().startswith("https://") or not url.lower().split("?")[0].endswith(".msi"):
+        raise CloudShareError("The Client Connector installer link should be an https URL to a .msi file.")
+    head = (f"$Url={_ps_str(url)};$Cloud={_ps_str(cloud)};$Domain={_ps_str(domain)};"
+            f"$Force=${'true' if force else 'false'}\n")
+    return ps_encoded(head + ZCC_SCRIPT)
+
+
 def check_command() -> str:
     return ps_encoded(CHECK_SCRIPT)
 

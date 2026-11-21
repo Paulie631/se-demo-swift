@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+- **Deploy all tab:** one button runs every configured step in order (test user, ZIA, ZPA, AI Guard, AWS stack, Quick knowledge base, Client Connector on the CloudShare VM, DSPM stack, traffic). Unconfigured steps are skipped with the reason; a failed step doesn't stop the rest. CLI: `./quick-kit deploy-all`.
+- **ZIdentity test users:** on ZIdentity/SAML tenants, "Create test user" now creates the user in ZIdentity, sets its password (kept in your keychain), lets it skip MFA enrollment for 30 days, and waits for it to reach ZIA. Removing the ZIA policy also deletes it.
+- **AI Guard in front of the MCP server:** Setup tab panel 5 creates an "Amazon Quick MCP (Demo)" app, a detection key and a policy match rule to the policy you pick. The next AWS deploy passes the key (hidden parameter) and the MCP Lambda scans every tool call's arguments (IN) and result (OUT); Block mode refuses when the policy says BLOCK, Monitor only logs. **Test scan** checks the key from the console. CLI: `./quick-kit aiguard`.
+- **Client Connector on the CloudShare VM:** Traffic tab › CloudShare › Install Client Connector: silent msiexec with the tenant cloud and sign-in domain preset. One interactive sign-in on the VM is still needed. CLI: `./quick-kit zcc`.
+- **DSPM onboarding:** AWS tab section 4: paste the DSPM console's CloudFormation quick-create link and the kit deploys that stack in the demo account (then Validate in DSPM). CLI: `./quick-kit dspm`.
+
 ## 0.6.0
 - **ZPA, fully automatic (phase 1):** the ZPA panel's connector group now defaults to **Create one for me**. The kit creates the "Amazon Quick (Demo) connectors" App Connector group (located near your Quick region, tied to the Connector enrollment certificate) and a provisioning key (max 5 uses), then the segment group, server group, application and access rule as before.
 - **AWS deploy with the ZPA path needs no copy and paste:** leave the provisioning key and AMI blank. The kit creates or reuses the key in ZPA and passes it to CloudFormation as a hidden parameter (never saved), and finds the newest Zscaler App Connector AMI in the region. If AWS says OptInRequired, subscribe to Zscaler App Connector in AWS Marketplace once.

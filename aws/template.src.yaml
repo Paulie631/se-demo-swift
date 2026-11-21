@@ -13,6 +13,8 @@ Metadata:
     ParameterGroups:
       - Label: {default: Core}
         Parameters: [ProjectName, McpToken]
+      - Label: {default: Optional - Zscaler AI Guard in front of the MCP server}
+        Parameters: [AiGuardKey, AiGuardHost, AiGuardMode]
       - Label: {default: Optional - Quick reachable only through ZPA}
         Parameters: [EnableZpaPath, ZpaProvisioningKey, AppConnectorAmiId, AppConnectorInstanceType, KeyPairName, VpcCidr]
 
@@ -29,6 +31,23 @@ Parameters:
     Description: >-
       Optional bearer token for the MCP server. Leave blank for no auth (Quick service
       auth "None"). If set, add header "Authorization: Bearer <token>" in Quick.
+  AiGuardKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: >-
+      Optional AI Guard detection API key. When set, the MCP server scans every tool call's
+      arguments (IN) and result (OUT) with AI Guard before answering.
+  AiGuardHost:
+    Type: String
+    Default: 'https://api.us1.zseclipse.net'
+    AllowedPattern: '^https://[a-z0-9.-]+$'
+    Description: AI Guard detection API host for your cloud.
+  AiGuardMode:
+    Type: String
+    AllowedValues: [monitor, block]
+    Default: block
+    Description: monitor = log AI Guard verdicts only; block = refuse when AI Guard's policy says BLOCK.
   EnableZpaPath:
     Type: String
     AllowedValues: ['true', 'false']
@@ -188,11 +207,11 @@ __SEED__
         description, injected tool output, over-shared PII. Synthetic data only.
       Runtime: python3.12
       Handler: index.handler
-      Timeout: 15
+      Timeout: 30
       MemorySize: 256
       Role: !GetAtt McpRole.Arn
       Environment:
-        Variables: {TOKEN: !Ref McpToken}
+        Variables: {TOKEN: !Ref McpToken, AIG_KEY: !Ref AiGuardKey, AIG_HOST: !Ref AiGuardHost, AIG_MODE: !Ref AiGuardMode}
       Code:
         ZipFile: |
 __MCP__
