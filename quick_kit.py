@@ -53,7 +53,7 @@ import aws_deploy  # noqa: E402
 import updater  # noqa: E402
 import zpa_quick  # noqa: E402
 
-VERSION = "0.4.3"
+VERSION = "0.4.4"
 HOME = pathlib.Path(os.environ.get("QUICK_KIT_HOME", pathlib.Path.home() / ".quick-se-kit"))
 CFG_FILE = HOME / "config.json"
 LOG_FILE = HOME / "kit.log"

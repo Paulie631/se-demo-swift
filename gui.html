@@ -57,6 +57,9 @@ th{font-size:12px;color:var(--muted);font-weight:600}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:flex-start;justify-content:center;z-index:20;padding:60px 16px;overflow:auto}
 .modal.on{display:flex}.modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;max-width:620px;width:100%}
 .modal h3{margin:0 0 8px;font-size:16px}.notes-md{white-space:pre-wrap;font-size:13px;background:var(--soft);border-radius:8px;padding:10px 12px;max-height:45vh;overflow:auto;margin:10px 0}
+.wsec{border-top:1px solid var(--line);padding:10px 0 4px}.wsec h4{margin:0 0 6px;font-size:13px}
+.wstep{display:flex;gap:8px;align-items:flex-start;margin:6px 0;font-size:13px}.wstep input{margin-top:3px}.wstep.done span.t{color:var(--muted);text-decoration:line-through}
+.val{display:flex;gap:6px;align-items:center;margin:4px 0 2px 24px}.val code{overflow-wrap:anywhere;flex:1}.val button{font-size:12px;padding:2px 8px}
 label.check{display:flex;gap:8px;align-items:flex-start;cursor:pointer}label.check input{margin-top:3px}
 .err{color:var(--bad);font-size:13px;margin-top:8px}
 .steps{counter-reset:s;list-style:none;padding:0;margin:0}
@@ -267,14 +270,10 @@ body.present .notes,body.present .presenter{display:none}
       <div class="err" id="awserr"></div>
     </div>
     <div class="panel">
-      <h2>2 · Deploy &amp; wire to Quick</h2>
-      <ol class="steps">
-        <li>Press <b>Deploy stack</b> (or upload the downloaded template in CloudFormation yourself). The outputs appear under the button.</li>
-        <li>Quick console: give Quick access to the stack's <code>DataBucketName</code>, then create an <b>S3 knowledge base</b> on it and add it to a chat agent or Space.</li>
-        <li>Quick console › <b>Connectors</b> › <b>Create for your team</b> › <b>Model Context Protocol (MCP)</b>: endpoint = <code>McpServerUrl</code>, connection type <b>Public network</b>, authentication <b>No authentication</b>. (Quick's MCP integration doesn't support custom headers, so deploy without an MCP token.) Needs Quick Enterprise.</li>
-        <li>ZPA path: create an app segment for <code>&lt;region&gt;.quicksight.aws.amazon.com</code> (TCP 443) on the new connector group.</li>
-        <li><b>Delete the stack after the demo.</b> The bucket is emptied automatically.</li>
-      </ol>
+      <div class="row"><h2 style="margin:0">2 · Wire it to Amazon Quick</h2><span class="sp" style="flex:1"></span><span class="hint" id="wireprog"></span></div>
+      <p class="hint" style="margin:8px 0 10px">Tick each step as you go (saved in this browser). Values fill in from your stack after <b>Deploy stack</b>. Some Quick versions call <b>Connectors</b> "Integrations".</p>
+      <div class="row" style="margin-bottom:10px"><a id="quicklink" target="_blank" rel="noopener">Open Amazon Quick ↗</a><button id="wirereset" style="font-size:12px;padding:3px 9px">Reset checklist</button></div>
+      <div id="wire"></div>
     </div>
     <div class="panel">
       <h2>3 · Check the MCP server</h2>
@@ -460,6 +459,49 @@ const csDo=(action,label)=>e=>busy(e.target,async()=>{$("#cserr").textContent=""
   catch(err){$("#csout").innerHTML="";$("#cserr").textContent=err.message}});
 $("#cscheck").onclick=csDo("check","Checking the VM");$("#cssched").onclick=csDo("schedule","Scheduling");$("#csunsched").onclick=csDo("unschedule","Removing the schedule");
 
+
+// ---------------- wire-to-Quick checklist
+const WIRE=o=>{const b=o.DataBucketName||"(deploy the stack first)",s3=o.KnowledgeBaseS3Uri||(o.DataBucketName?`s3://${o.DataBucketName}/`:"(deploy the stack first)"),m=o.McpServerUrl||"(deploy the stack first)";
+ const v=x=>`<div class="val"><code>${esc(x)}</code>${x.startsWith("(")?"":`<button data-cp="${esc(x)}">Copy</button>`}</div>`;
+ return [
+ {h:"A · Let Quick read the demo bucket (Quick admin, once)",s:[
+  ["a1","Quick admin console › <b>Permissions</b> › <b>AWS resources</b>."],
+  ["a2","Under <b>Allow access and autodiscovery for these resources</b>, tick <b>Amazon S3</b>, then <b>Select S3 buckets</b>."],
+  ["a3","On <b>S3 Buckets Linked To Quick Account</b>, tick this bucket, then <b>Finish</b>:"+v(b)]]},
+ {h:"B · Create the S3 knowledge base",s:[
+  ["b1","Quick console › <b>Integrations</b> (or <b>Connectors</b>) › under <b>Amazon S3</b>, choose <b>+</b>."],
+  ["b2","Bucket location: <b>this Quick account</b>. Bucket URL (same Region as Quick):"+v(s3)],
+  ["b3","<b>Next</b>, name it (e.g. <i>Demo company files</i>), <b>Create</b>. Wait until it shows <b>Available</b> instead of Syncing."],
+  ["b4","Add the knowledge base as a source in the Space or chat agent you'll demo from."]]},
+ {h:"C · Add the MCP server as a connector",s:[
+  ["c1","Quick console › <b>Connectors</b> › <b>Create for your team</b> › <b>Model Context Protocol (MCP)</b>."],
+  ["c2","Name it (e.g. <i>Vendor tools (demo)</i>). MCP server endpoint:"+v(m)],
+  ["c3","Connection type <b>Public network</b> › <b>Next</b> › authentication <b>No authentication</b> › <b>Create and continue</b> › <b>Next</b>."],
+  ["c4","Turn on all three actions: <code>get_ticket</code>, <code>search_customers</code>, <code>get_vendor_profile</code>."],
+  ["c5","Press <b>Run check</b> in panel 3 →: three tools and a poisoned vendor reply mean the server is good."]]},
+ {h:"D · Optional: ZPA path",s:[
+  ["d1","Only if you deployed with the ZPA path: Setup tab › <b>ZPA</b> panel › enter the customer ID, pick the connector group, <b>Create</b>."]]},
+ {h:"E · Smoke test in Quick chat (knowledge base and connector added)",s:[
+  ["e1","Data exposure (Act 5):"+v("What do our directors earn?")],
+  ["e2","Hidden prompt injection in the vendor guide (Act 5):"+v("Summarize our vendor onboarding guide.")],
+  ["e3","Poisoned MCP tool (Act 4):"+v("Get the vendor profile for Acme.")]]},
+ {h:"F · After the demo",s:[
+  ["f1","Press <b>Delete stack</b> (empties and removes the bucket, MCP server and roles)."],
+  ["f2","In Quick, delete the knowledge base and the MCP connector so they don't point at deleted resources."]]}
+ ]};
+function wireKey(){return "qk-wire-"+((CFG.aws||{}).project||"zs-quick-demo")}
+function wireState(){try{return JSON.parse(localStorage.getItem(wireKey())||"{}")}catch(e){return{}}}
+function renderWire(o){
+  o=o||((CFG.aws||{}).outputs)||{};const st=wireState(),secs=WIRE(o);let n=0,d=0;
+  $("#wire").innerHTML=secs.map(sec=>`<div class="wsec"><h4>${sec.h}</h4>${sec.s.map(([id,t])=>{n++;if(st[id])d++;
+    return`<label class="wstep ${st[id]?"done":""}"><input type="checkbox" data-w="${id}" ${st[id]?"checked":""}><span class="t">${t}</span></label>`}).join("")}</div>`).join("");
+  $("#wireprog").textContent=`${d}/${n} done`;
+  $$("[data-w]").forEach(c=>c.onchange=()=>{const s=wireState();s[c.dataset.w]=c.checked;try{localStorage.setItem(wireKey(),JSON.stringify(s))}catch(e){};renderWire(o)});
+  $$("#wire [data-cp]").forEach(b=>b.onclick=ev=>{ev.preventDefault();navigator.clipboard.writeText(b.dataset.cp);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1200)});
+  const r=(CFG.aws||{}).region||"us-east-1";$("#quicklink").href=`https://${r}.quicksight.aws.amazon.com/`;
+}
+$("#wirereset").onclick=()=>{if(confirm("Untick every step in the checklist?")){try{localStorage.removeItem(wireKey())}catch(e){};renderWire()}};
+
 // ---------------- AWS deploy
 let AWSAUTH="profile";
 function setAuth(a){AWSAUTH=a;$$("#awsauth button").forEach(b=>b.classList.toggle("on",b.dataset.a===a));$("#awsprof").style.display=a==="profile"?"":"none";$("#awskeys").style.display=a==="keys"?"":"none"}
@@ -471,7 +513,7 @@ $("#awsprofref").onclick=()=>loadProfiles().catch(()=>{});
 function awsAll(){return Object.assign(awsParams(),{auth:AWSAUTH,profile:$("#awsprofile").value,key_id:$("#awskid").value.trim()})}
 async function saveAws(){const body={aws:awsAll()};if($("#awssec").value)body.aws_secret=$("#awssec").value;await api("/api/config",body);$("#awssec").value="";await loadCfg()}
 $("#awsprofile").onchange=()=>saveAws().catch(()=>{});
-function showOuts(o){if(!o||!Object.keys(o).length){$("#awsouts").innerHTML="";return}
+function showOuts(o){renderWire(o||{});if(!o||!Object.keys(o).length){$("#awsouts").innerHTML="";return}
   $("#awsouts").innerHTML=`<table style="margin-top:12px"><thead><tr><th>Output</th><th>Value</th></tr></thead><tbody>${Object.entries(o).map(([k,v])=>`<tr><td>${esc(k)}</td><td><code>${esc(v)}</code> <button data-cp="${esc(v)}">Copy</button></td></tr>`).join("")}</tbody></table>`;
   $$("[data-cp]").forEach(b=>b.onclick=()=>{navigator.clipboard.writeText(b.dataset.cp);b.textContent="Copied";setTimeout(()=>b.textContent="Copy",1200)});
   if(o.McpServerUrl&&!$("#mcpurl").value)$("#mcpurl").value=o.McpServerUrl}

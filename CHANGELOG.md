@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.4
+- **Wire it to Amazon Quick** checklist on the AWS tab: step-by-step console instructions (bucket access, S3 knowledge base, MCP connector, optional ZPA, smoke-test prompts, cleanup) with your stack's bucket, S3 URL and MCP URL filled in and copy buttons. Ticks are saved in the browser.
+
 ## 0.4.3
 - Corrected the Quick wiring steps: Quick's MCP integration supports OAuth or No authentication, not custom headers, so deploy without an MCP token when Quick connects.
 
