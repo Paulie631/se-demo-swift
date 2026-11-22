@@ -620,7 +620,7 @@ class FakeQS:
         self.ds, self.kb, self.spaces, self.calls, self.polls = {}, {}, {}, [], 0
 
     def describe_account_subscription(self, AwsAccountId):
-        return {"AccountInfo": {"AccountName": "paulaiuto-quick-demo", "Edition": "ENTERPRISE",
+        return {"AccountInfo": {"AccountName": "acme-quick-demo", "Edition": "ENTERPRISE",
                                 "AccountSubscriptionStatus": "ACCOUNT_CREATED", "AuthenticationType": "IAM_AND_QUICKSIGHT"}}
 
     def list_users(self, **kw):
@@ -789,12 +789,12 @@ class CloudShareKeyTests(unittest.TestCase):
         orig = cs_runner.requests.request
         cs_runner.requests.request = fake_request
         try:
-            cs = cs_runner.CloudShare(" JLUXXLF2XZM9CAKJ ", "SECRETKEY\n")
-            self.assertEqual((cs.api_id, cs.api_key), ("JLUXXLF2XZM9CAKJ", "SECRETKEY"))
+            cs = cs_runner.CloudShare(" EXAMPLEAPIID0000 ", "SECRETKEY\n")
+            self.assertEqual((cs.api_id, cs.api_key), ("EXAMPLEAPIID0000", "SECRETKEY"))
             with self.assertRaises(cs_runner.CloudShareError) as e:
                 cs.envs()
             self.assertIn("doesn't match the API ID", str(e.exception))
-            self.assertIn("userapiid:JLUXXLF2XZM9CAKJ;", seen[0])
+            self.assertIn("userapiid:EXAMPLEAPIID0000;", seen[0])
         finally:
             cs_runner.requests.request = orig
 
